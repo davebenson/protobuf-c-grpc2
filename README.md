@@ -12,7 +12,7 @@ supported.
 
 * **protobuf-c with streaming support** (the `ProtobufCService::invoke`
   streaming extensions and `protoc-gen-c` method flags). This is not yet in
-  a protobuf-c release; it is on the `streaming-api` branch of
+  a protobuf-c release; it is on the `streaming-support` branch of
   <https://github.com/davebenson/protobuf-c>.
 * **nghttp2 version 2** (`libnghttp2v2`, pkg-config `libnghttp2v2`).
 * Optionally libuv and OpenSSL, for the adapters below.
