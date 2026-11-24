@@ -451,33 +451,3 @@ protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
 	io->base.destroy = uv_destroy_;
 	return &io->base;
 }
-
-int
-protobuf_c_grpc2_server_builder_use_uv(ProtobufCGrpc2ServerBuilder *builder,
-				       uv_loop_t *loop)
-{
-	ProtobufCGrpc2IoSystem *io = protobuf_c_grpc2_io_system_new_uv(loop);
-
-	if (io == NULL)
-		return -1;
-	if (protobuf_c_grpc2_server_builder_add_io_system(builder, io) != 0) {
-		io->destroy(io);
-		return -1;
-	}
-	return 0;
-}
-
-int
-protobuf_c_grpc2_client_builder_use_uv(ProtobufCGrpc2ClientBuilder *builder,
-				       uv_loop_t *loop)
-{
-	ProtobufCGrpc2IoSystem *io = protobuf_c_grpc2_io_system_new_uv(loop);
-
-	if (io == NULL)
-		return -1;
-	if (protobuf_c_grpc2_client_builder_add_io_system(builder, io) != 0) {
-		io->destroy(io);
-		return -1;
-	}
-	return 0;
-}

@@ -1,5 +1,5 @@
 /*
- * Client builder and the client "channel": lazy connect, queued calls,
+ * The client "channel": creation, lazy connect, queued calls,
  * reconnect and backoff on top of the pluggable I/O and TLS interfaces.
  */
 #include <stdio.h>
@@ -13,19 +13,7 @@
 #define DEFAULT_CONNECT_TIMEOUT_MS 20000u
 
 /* ------------------------------------------------------------------ */
-/* builder */
-
-struct ProtobufCGrpc2ClientBuilder {
-	char *host;
-	unsigned port;
-	char *server_name;
-	char *authority;
-	char *scheme;
-	ProtobufCGrpc2ConnOptions options;
-	uint64_t backoff_initial_ms, backoff_max_ms, connect_timeout_ms;
-	ProtobufCGrpc2IoSystem *io;
-	ProtobufCGrpc2SecureTransportSystem *sts;
-};
+/* creation */
 
 static char *
 dup_or_null(const char *s)
@@ -40,120 +28,6 @@ dup_or_null(const char *s)
 	if (r != NULL)
 		memcpy(r, s, n);
 	return r;
-}
-
-ProtobufCGrpc2ClientBuilder *
-protobuf_c_grpc2_client_builder_new(void)
-{
-	ProtobufCGrpc2ClientBuilder *b = calloc(1, sizeof(*b));
-
-	if (b != NULL) {
-		b->backoff_initial_ms = DEFAULT_BACKOFF_INITIAL_MS;
-		b->backoff_max_ms = DEFAULT_BACKOFF_MAX_MS;
-		b->connect_timeout_ms = DEFAULT_CONNECT_TIMEOUT_MS;
-	}
-	return b;
-}
-
-void
-protobuf_c_grpc2_client_builder_free(ProtobufCGrpc2ClientBuilder *b)
-{
-	if (b == NULL)
-		return;
-	if (b->io != NULL && b->io->destroy != NULL)
-		b->io->destroy(b->io);
-	if (b->sts != NULL && b->sts->destroy != NULL)
-		b->sts->destroy(b->sts);
-	free(b->host);
-	free(b->server_name);
-	free(b->authority);
-	free(b->scheme);
-	free(b);
-}
-
-int
-protobuf_c_grpc2_client_builder_set_target(ProtobufCGrpc2ClientBuilder *b,
-					   const char *host, unsigned port)
-{
-	char *h = dup_or_null(host);
-
-	if (h == NULL)
-		return -1;
-	free(b->host);
-	b->host = h;
-	b->port = port;
-	return 0;
-}
-
-int
-protobuf_c_grpc2_client_builder_set_server_name(ProtobufCGrpc2ClientBuilder *b,
-						const char *server_name)
-{
-	char *n = dup_or_null(server_name);
-
-	if (n == NULL)
-		return -1;
-	free(b->server_name);
-	b->server_name = n;
-	return 0;
-}
-
-int
-protobuf_c_grpc2_client_builder_set_options(ProtobufCGrpc2ClientBuilder *b,
-					    const ProtobufCGrpc2ConnOptions *o)
-{
-	char *auth = dup_or_null(o->authority);
-	char *scheme = dup_or_null(o->scheme);
-
-	if ((o->authority != NULL && auth == NULL) ||
-	    (o->scheme != NULL && scheme == NULL)) {
-		free(auth);
-		free(scheme);
-		return -1;
-	}
-	free(b->authority);
-	free(b->scheme);
-	b->authority = auth;
-	b->scheme = scheme;
-	b->options = *o;
-	b->options.authority = NULL;	/* owned by the builder, set later */
-	b->options.scheme = NULL;
-	return 0;
-}
-
-void
-protobuf_c_grpc2_client_builder_set_backoff(ProtobufCGrpc2ClientBuilder *b,
-					    uint64_t initial_ms, uint64_t max_ms)
-{
-	b->backoff_initial_ms = initial_ms;
-	b->backoff_max_ms = max_ms < initial_ms ? initial_ms : max_ms;
-}
-
-void
-protobuf_c_grpc2_client_builder_set_connect_timeout_ms(
-	ProtobufCGrpc2ClientBuilder *b, uint64_t ms)
-{
-	b->connect_timeout_ms = ms;
-}
-
-int
-protobuf_c_grpc2_client_builder_add_io_system(ProtobufCGrpc2ClientBuilder *b,
-					      ProtobufCGrpc2IoSystem *io)
-{
-	if (b->io != NULL)
-		return -1;
-	b->io = io;
-	return 0;
-}
-
-int
-protobuf_c_grpc2_client_builder_add_secure_transport_system(
-	ProtobufCGrpc2ClientBuilder *b, ProtobufCGrpc2SecureTransportSystem *sts)
-{
-	if (b->sts != NULL)
-		return -1;
-	b->sts = sts;
-	return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,38 +66,57 @@ protobuf_c_grpc2__client_options(const ProtobufCGrpc2Client *client)
 }
 
 ProtobufCGrpc2Client *
-protobuf_c_grpc2_client_from_builder(ProtobufCGrpc2ClientBuilder *b)
+protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 {
+	ProtobufCGrpc2ClientOptions o;
 	ProtobufCGrpc2Client *c;
+	char text[300];
 
-	if (b->io == NULL || b->host == NULL)
+	if (options == NULL ||
+	    PROTOBUF_C_GRPC2__COPY_OPTIONS(&o, options) != 0)
+		return NULL;
+	if (o.io == NULL || o.host == NULL)
 		return NULL;
 	c = calloc(1, sizeof(*c));
 	if (c == NULL)
 		return NULL;
-	c->host = b->host;
-	c->port = b->port;
-	c->server_name = b->server_name != NULL ? b->server_name : dup_or_null(b->host);
-	c->scheme = b->scheme != NULL ? b->scheme
-		: dup_or_null(b->sts != NULL ? "https" : "http");
-	if (b->authority != NULL) {
-		c->authority = b->authority;
+	c->host = dup_or_null(o.host);
+	c->port = o.port;
+	c->server_name = dup_or_null(o.server_name != NULL ? o.server_name : o.host);
+	c->scheme = dup_or_null(o.secure_transport != NULL ? "https" : "http");
+	if (o.authority != NULL) {
+		c->authority = dup_or_null(o.authority);
 	} else {
-		char text[300];
-		snprintf(text, sizeof text, "%s:%u", b->host, b->port);
+		snprintf(text, sizeof text, "%s:%u", o.host, o.port);
 		c->authority = dup_or_null(text);
 	}
-	b->host = b->server_name = b->authority = b->scheme = NULL; /* moved */
-	c->options = b->options;
+	if (c->host == NULL || c->server_name == NULL || c->scheme == NULL ||
+	    c->authority == NULL) {
+		/* io and secure_transport stay with the caller */
+		free(c->host);
+		free(c->server_name);
+		free(c->scheme);
+		free(c->authority);
+		free(c);
+		return NULL;
+	}
+	c->options.struct_size = sizeof c->options;
+	c->options.max_message_size = o.max_message_size;
+	c->options.default_timeout_ms = o.default_timeout_ms;
+	c->options.on_call_done = o.on_call_done;
+	c->options.user_data = o.user_data;
 	c->options.authority = c->authority;
 	c->options.scheme = c->scheme;
-	c->backoff_initial_ms = b->backoff_initial_ms;
-	c->backoff_max_ms = b->backoff_max_ms;
-	c->connect_timeout_ms = b->connect_timeout_ms;
-	c->io = b->io;
-	c->sts = b->sts;
-	b->io = NULL;
-	b->sts = NULL;
+	c->backoff_initial_ms = o.initial_backoff_ms ? o.initial_backoff_ms
+		: DEFAULT_BACKOFF_INITIAL_MS;
+	c->backoff_max_ms = o.max_backoff_ms ? o.max_backoff_ms
+		: DEFAULT_BACKOFF_MAX_MS;
+	if (c->backoff_max_ms < c->backoff_initial_ms)
+		c->backoff_max_ms = c->backoff_initial_ms;
+	c->connect_timeout_ms = o.connect_timeout_ms ? o.connect_timeout_ms
+		: DEFAULT_CONNECT_TIMEOUT_MS;
+	c->io = o.io;
+	c->sts = o.secure_transport;
 	c->state = C_IDLE;
 	return c;
 }

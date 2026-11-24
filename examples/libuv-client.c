@@ -18,7 +18,7 @@
 
 #include <uv.h>
 
-#include <protobuf-c-grpc2/protobuf-c-grpc2-builder.h>
+#include <protobuf-c-grpc2/protobuf-c-grpc2.h>
 #include <protobuf-c-grpc2/protobuf-c-grpc2-uv.h>
 #ifdef HAVE_OPENSSL
 #include <protobuf-c-grpc2/protobuf-c-grpc2-openssl.h>
@@ -107,18 +107,15 @@ main(int argc, char **argv)
 	const char *host = argc > 1 ? argv[1] : "127.0.0.1";
 	unsigned port = argc > 2 ? (unsigned) atoi(argv[2]) : 50051;
 	uv_loop_t *loop = uv_default_loop();
-	ProtobufCGrpc2ConnOptions opts;
-	ProtobufCGrpc2ClientBuilder *builder;
+	ProtobufCGrpc2ClientOptions opts = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 
 	if (argc > 3)
 		name = argv[3];
 
-	builder = protobuf_c_grpc2_client_builder_new();
-	protobuf_c_grpc2_client_builder_set_target(builder, host, port);
-	protobuf_c_grpc2_client_builder_use_uv(builder, loop);
-	memset(&opts, 0, sizeof opts);
+	opts.host = host;
+	opts.port = port;
+	opts.io = protobuf_c_grpc2_io_system_new_uv(loop);
 	opts.on_call_done = on_call_done;
-	protobuf_c_grpc2_client_builder_set_options(builder, &opts);
 
 	if (argc > 4) {
 #ifdef HAVE_OPENSSL
@@ -128,16 +125,16 @@ main(int argc, char **argv)
 			return 2;
 		}
 		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-		protobuf_c_grpc2_client_builder_use_openssl(builder, ctx);
-		SSL_CTX_free(ctx);	/* the builder holds its own reference */
+		opts.secure_transport =
+			protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+		SSL_CTX_free(ctx);	/* the transport holds its own reference */
 #else
 		fprintf(stderr, "built without OpenSSL: no TLS\n");
 		return 2;
 #endif
 	}
 
-	client = protobuf_c_grpc2_client_from_builder(builder);
-	protobuf_c_grpc2_client_builder_free(builder);
+	client = protobuf_c_grpc2_client_new(&opts);
 	if (client == NULL) {
 		fprintf(stderr, "cannot create the client\n");
 		return 2;

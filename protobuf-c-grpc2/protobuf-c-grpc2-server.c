@@ -1,7 +1,7 @@
 /*
- * Server builder and the generic server connection pump: it moves bytes
- * between a pluggable ProtobufCGrpc2IoSystem, an optional pluggable
- * ProtobufCGrpc2SecureTransport and a ProtobufCGrpc2Conn.
+ * Servers that run their own connections: creation, the listeners and the
+ * list of connections. The per-connection work (moving bytes between the I/O
+ * stream, the optional TLS session and the HTTP/2 connection) is in pump.c.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -9,84 +9,6 @@
 #include "protobuf-c-grpc2-internal.h"
 
 #define IO_CHUNK 16384
-
-/* ------------------------------------------------------------------ */
-/* builder */
-
-struct ProtobufCGrpc2ServerBuilder {
-	ProtobufCService **services;
-	size_t n_services;
-	ProtobufCGrpc2ConnOptions options;
-	ProtobufCGrpc2IoSystem *io;
-	ProtobufCGrpc2SecureTransportSystem *sts;
-};
-
-ProtobufCGrpc2ServerBuilder *
-protobuf_c_grpc2_server_builder_new(void)
-{
-	return calloc(1, sizeof(ProtobufCGrpc2ServerBuilder));
-}
-
-void
-protobuf_c_grpc2_server_builder_free(ProtobufCGrpc2ServerBuilder *b)
-{
-	if (b == NULL)
-		return;
-	if (b->io != NULL && b->io->destroy != NULL)
-		b->io->destroy(b->io);
-	if (b->sts != NULL && b->sts->destroy != NULL)
-		b->sts->destroy(b->sts);
-	free(b->services);
-	free(b);
-}
-
-int
-protobuf_c_grpc2_server_builder_add_service(ProtobufCGrpc2ServerBuilder *b,
-					    ProtobufCService *service)
-{
-	const char *name = service->descriptor->name;
-	ProtobufCService **n;
-	size_t i;
-
-	if (name == NULL)
-		return -1;
-	for (i = 0; i < b->n_services; i++)
-		if (strcmp(b->services[i]->descriptor->name, name) == 0)
-			return -1;
-	n = realloc(b->services, (b->n_services + 1) * sizeof(*n));
-	if (n == NULL)
-		return -1;
-	b->services = n;
-	n[b->n_services++] = service;
-	return 0;
-}
-
-void
-protobuf_c_grpc2_server_builder_set_options(ProtobufCGrpc2ServerBuilder *b,
-					    const ProtobufCGrpc2ConnOptions *o)
-{
-	b->options = *o;
-}
-
-int
-protobuf_c_grpc2_server_builder_add_io_system(ProtobufCGrpc2ServerBuilder *b,
-					      ProtobufCGrpc2IoSystem *io)
-{
-	if (b->io != NULL)
-		return -1;
-	b->io = io;
-	return 0;
-}
-
-int
-protobuf_c_grpc2_server_builder_add_secure_transport_system(
-	ProtobufCGrpc2ServerBuilder *b, ProtobufCGrpc2SecureTransportSystem *sts)
-{
-	if (b->sts != NULL)
-		return -1;
-	b->sts = sts;
-	return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* connections (the per-connection work is in pump.c) */
@@ -180,36 +102,46 @@ server_accepted(void *data, void *stream)
 /* server */
 
 ProtobufCGrpc2Server *
-protobuf_c_grpc2_server_from_builder(ProtobufCGrpc2ServerBuilder *b)
+protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 {
+	ProtobufCGrpc2ServerOptions o;
 	ProtobufCGrpc2Server *server;
+	size_t i;
 
-	if (b->io == NULL)
+	memset(&o, 0, sizeof o);
+	if (options != NULL &&
+	    PROTOBUF_C_GRPC2__COPY_OPTIONS(&o, options) != 0)
+		return NULL;
+	if ((o.n_services > 0 && o.services == NULL) ||
+	    (o.io == NULL && o.secure_transport != NULL))
 		return NULL;
 	server = calloc(1, sizeof(*server));
 	if (server == NULL)
 		return NULL;
-	if (b->n_services > 0) {
-		server->services = malloc(b->n_services * sizeof(*server->services));
-		if (server->services == NULL) {
+	for (i = 0; i < o.n_services; i++) {
+		if (protobuf_c_grpc2_server_add_service(server, o.services[i]) != 0) {
+			free(server->services);
 			free(server);
 			return NULL;
 		}
-		memcpy(server->services, b->services,
-		       b->n_services * sizeof(*server->services));
-		server->n_services = b->n_services;
 	}
-	server->conn_options = b->options;
-	server->io = b->io;
-	server->sts = b->sts;
-	b->io = NULL;			/* ownership moves to the server */
-	b->sts = NULL;
-	server->hook = server->io->add_iteration_hook(
-		server->io, server_iteration_hook, server);
-	if (server->hook == NULL) {
-		server->shutting_down = 1;
-		server_maybe_finish(server);
-		return NULL;
+	server->conn_options.struct_size = sizeof server->conn_options;
+	server->conn_options.max_message_size = o.max_message_size;
+	server->conn_options.default_timeout_ms = o.default_timeout_ms;
+	server->conn_options.max_timeout_ms = o.max_timeout_ms;
+	server->conn_options.on_call_done = o.on_call_done;
+	server->conn_options.user_data = o.user_data;
+	if (o.io != NULL) {
+		server->hook = o.io->add_iteration_hook(o.io, server_iteration_hook,
+							server);
+		if (server->hook == NULL) {
+			/* io and secure_transport stay with the caller */
+			free(server->services);
+			free(server);
+			return NULL;
+		}
+		server->io = o.io;
+		server->sts = o.secure_transport;
 	}
 	return server;
 }

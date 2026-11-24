@@ -69,7 +69,6 @@ install(TARGETS protobuf-c-grpc2
 install(FILES
   protobuf-c-grpc2/protobuf-c-grpc2.h
   protobuf-c-grpc2/protobuf-c-grpc2-io.h
-  protobuf-c-grpc2/protobuf-c-grpc2-builder.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/protobuf-c-grpc2)
 grpc2_pc(protobuf-c-grpc2)
 
@@ -140,14 +139,14 @@ if(BUILD_TESTS)
 
   if(LIBUV_FOUND AND OPENSSL_FOUND)
     grpc2_protoc(examples greeter)
-    add_executable(test-builder t/builder.c
+    add_executable(test-endpoints t/endpoints.c
       ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
-    target_include_directories(test-builder PRIVATE
+    target_include_directories(test-endpoints PRIVATE
       ${CMAKE_CURRENT_BINARY_DIR}/examples)
-    target_link_libraries(test-builder protobuf-c-grpc2-uv
+    target_link_libraries(test-endpoints protobuf-c-grpc2-uv
       protobuf-c-grpc2-openssl)
-    add_test(NAME builder COMMAND test-builder)
-    set_tests_properties(builder PROPERTIES TIMEOUT 60)
+    add_test(NAME endpoints COMMAND test-endpoints)
+    set_tests_properties(endpoints PROPERTIES TIMEOUT 60)
 
     add_executable(test-client t/client.c
       ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)

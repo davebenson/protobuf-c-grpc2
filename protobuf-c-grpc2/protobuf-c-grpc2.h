@@ -19,6 +19,8 @@
 
 #include <protobuf-c/protobuf-c.h>
 
+#include "protobuf-c-grpc2-io.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,8 +54,29 @@ typedef struct ProtobufCGrpc2Server ProtobufCGrpc2Server;
 /** One HTTP/2 connection, either the client or the server end. */
 typedef struct ProtobufCGrpc2Conn ProtobufCGrpc2Conn;
 
-/** Options for a connection; zero-initialise and set what you need. */
+/**
+ * Called when a call finishes, on the client and the server alike. This is
+ * how errors are reported for calls whose closure only sees a NULL message.
+ * `message` may be NULL. `method` is NULL on the server when the request
+ * named no known method (or was not gRPC).
+ */
+typedef void (*ProtobufCGrpc2CallDoneFn)(const ProtobufCMethodDescriptor *method,
+					 int status, const char *message,
+					 void *user_data);
+
+/*
+ * About all the options structs in this library: set `struct_size` to
+ * sizeof the struct (the *_INIT macros do this) and leave every other field
+ * you do not use zeroed. The library reads only as many bytes as
+ * `struct_size` says, so a program built against an older version of a
+ * struct keeps working when fields are added at its end. A struct with
+ * `struct_size` 0 is rejected.
+ */
+
+/** Options for a connection; see the note above about `struct_size`. */
 typedef struct ProtobufCGrpc2ConnOptions {
+	/** sizeof(ProtobufCGrpc2ConnOptions). */
+	size_t struct_size;
 	/** Largest accepted message in bytes; 0 means 4 MiB. */
 	size_t max_message_size;
 	/** Client only: value of the `:authority` header; default "localhost". */
@@ -73,24 +96,31 @@ typedef struct ProtobufCGrpc2ConnOptions {
 	 * no deadline are not affected (use default_timeout_ms for those).
 	 */
 	uint64_t max_timeout_ms;
-	/**
-	 * Optional. Called when a call finishes, on the client and the server
-	 * alike. This is how errors are reported for calls whose closure only
-	 * sees a NULL message. `message` may be NULL. `method` is NULL on the
-	 * server when the request named no known method (or was not gRPC).
-	 */
-	void (*on_call_done)(const ProtobufCMethodDescriptor *method,
-			     int status,
-			     const char *message,
-			     void *user_data);
+	/** Optional; see ProtobufCGrpc2CallDoneFn. */
+	ProtobufCGrpc2CallDoneFn on_call_done;
 	void *user_data;
 } ProtobufCGrpc2ConnOptions;
 
-/**
- * Create a server. Services are not owned by the server; they must outlive
- * every connection created from it.
+#define PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT \
+	{ sizeof(ProtobufCGrpc2ConnOptions) }
+
+/*
+ * The server type serves two uses. Without I/O components (options NULL,
+ * or no `io`) it is just a registry of services that you attach to
+ * connections you drive yourself. With an I/O system (see
+ * ProtobufCGrpc2ServerOptions below) it also listens and runs its own
+ * connections.
  */
-ProtobufCGrpc2Server *protobuf_c_grpc2_server_new(void);
+typedef struct ProtobufCGrpc2ServerOptions ProtobufCGrpc2ServerOptions;
+
+/**
+ * Create a server from `options` (which may be NULL for an empty registry
+ * with default settings). Services are not owned by the server; they must
+ * outlive it. Returns NULL on failure, and then `io` and `secure_transport`
+ * stay with the caller; on success the server owns them.
+ */
+ProtobufCGrpc2Server *protobuf_c_grpc2_server_new(
+	const ProtobufCGrpc2ServerOptions *options);
 void protobuf_c_grpc2_server_free(ProtobufCGrpc2Server *server);
 
 /**
@@ -184,6 +214,155 @@ int protobuf_c_grpc2_client_service_set_timeout_ms(ProtobufCService *service,
 ProtobufCService *protobuf_c_grpc2_conn_client_service(
 	ProtobufCGrpc2Conn *conn,
 	const ProtobufCServiceDescriptor *descriptor);
+
+/* ------------------------------------------------------------------ */
+/* Servers and clients that run their own connections */
+
+/**
+ * Options for protobuf_c_grpc2_server_new(). Everything is optional except
+ * `struct_size` (see the note about options structs above), but a server
+ * that listens needs `io`.
+ *
+ *   ProtobufCGrpc2ServerOptions o = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
+ *   ProtobufCService *services[] = { &my_service.base };
+ *   o.services = services;
+ *   o.n_services = 1;
+ *   o.io = protobuf_c_grpc2_io_system_new_uv(loop);            // -uv library
+ *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+ *   ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new(&o);
+ *   protobuf_c_grpc2_server_listen(server, "0.0.0.0", 50051);
+ */
+struct ProtobufCGrpc2ServerOptions {
+	/** sizeof(ProtobufCGrpc2ServerOptions). */
+	size_t struct_size;
+	/** The services to serve, looked up by full name; the array is copied
+	 *  but the services are not and must outlive the server. */
+	ProtobufCService *const *services;
+	size_t n_services;
+	/**
+	 * The event loop (see protobuf-c-grpc2-io.h). Ownership passes to the
+	 * server on success, which calls its `destroy` at the end. Without it
+	 * the server cannot listen.
+	 */
+	ProtobufCGrpc2IoSystem *io;
+	/**
+	 * Optional TLS. With it, connections use TLS and must negotiate ALPN
+	 * "h2"; without it they are cleartext HTTP/2 (h2c), which is right
+	 * behind a TLS-terminating proxy. Ownership as for `io`.
+	 */
+	ProtobufCGrpc2SecureTransportSystem *secure_transport;
+	/** Largest accepted message in bytes; 0 means 4 MiB. */
+	size_t max_message_size;
+	/** Deadline (ms) for calls whose client sent no `grpc-timeout`; 0 =
+	 *  none. */
+	uint64_t default_timeout_ms;
+	/** The longest deadline (ms) a client may ask for; 0 = unlimited. */
+	uint64_t max_timeout_ms;
+	/** Optional; see ProtobufCGrpc2CallDoneFn. */
+	ProtobufCGrpc2CallDoneFn on_call_done;
+	void *user_data;
+};
+
+#define PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT \
+	{ sizeof(ProtobufCGrpc2ServerOptions) }
+
+/** Start accepting connections; the server must have an I/O system. May be
+ *  called more than once. Returns 0, or -1. */
+int protobuf_c_grpc2_server_listen(ProtobufCGrpc2Server *server,
+				   const char *host, unsigned port);
+
+/*
+ * protobuf_c_grpc2_server_free() on a server with an I/O system closes the
+ * listeners and connections; the memory goes once the event loop has
+ * finished closing them.
+ */
+
+/*
+ * A client is a "channel" to one server (host and port). It connects lazily
+ * on the first call and queues calls until the connection is ready. If the
+ * connection is lost, calls in flight fail with UNAVAILABLE and the next
+ * call reconnects. If a connection attempt fails (or the connection is
+ * lost before the server ever answered, e.g. a failed TLS handshake), the
+ * client backs off: calls made during the backoff fail at once with
+ * UNAVAILABLE, and the delay grows exponentially up to a maximum. There is
+ * one connection per client.
+ */
+typedef struct ProtobufCGrpc2Client ProtobufCGrpc2Client;
+
+/**
+ * Options for protobuf_c_grpc2_client_new(); `struct_size`, `host`, `port`
+ * and `io` are required.
+ *
+ *   ProtobufCGrpc2ClientOptions o = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
+ *   o.host = "example.com";
+ *   o.port = 50051;
+ *   o.io = protobuf_c_grpc2_io_system_new_uv(loop);
+ *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+ *   ProtobufCGrpc2Client *client = protobuf_c_grpc2_client_new(&o);
+ *   ProtobufCService *svc = protobuf_c_grpc2_client_get_service(client, &desc);
+ */
+typedef struct ProtobufCGrpc2ClientOptions {
+	/** sizeof(ProtobufCGrpc2ClientOptions). */
+	size_t struct_size;
+	/** The server to talk to; `host` may be a name (copied). */
+	const char *host;
+	unsigned port;
+	/** The name used for TLS (SNI and certificate verification); default:
+	 *  `host`. */
+	const char *server_name;
+	/** Value of the `:authority` header; default "host:port". */
+	const char *authority;
+	/** The event loop; ownership passes to the client on success. */
+	ProtobufCGrpc2IoSystem *io;
+	/** Optional TLS (the server must negotiate ALPN "h2"); ownership as
+	 *  for `io`. Configure trust roots and verification on the TLS
+	 *  library's context. */
+	ProtobufCGrpc2SecureTransportSystem *secure_transport;
+	/** Largest accepted message in bytes; 0 means 4 MiB. */
+	size_t max_message_size;
+	/** Timeout (ms, 0 = none) that service handles start with; see
+	 *  protobuf_c_grpc2_client_service_set_timeout_ms(). */
+	uint64_t default_timeout_ms;
+	/** Reconnection backoff: first delay and maximum, in ms (0 = 1000 and
+	 *  120000), growing by x1.6. */
+	uint64_t initial_backoff_ms;
+	uint64_t max_backoff_ms;
+	/** How long a connection attempt may take, in ms (0 = 20000). */
+	uint64_t connect_timeout_ms;
+	/** Optional; see ProtobufCGrpc2CallDoneFn. */
+	ProtobufCGrpc2CallDoneFn on_call_done;
+	void *user_data;
+} ProtobufCGrpc2ClientOptions;
+
+#define PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT \
+	{ sizeof(ProtobufCGrpc2ClientOptions) }
+
+/**
+ * Create a client; no connection is made until the first call. Returns NULL
+ * on failure, and then `io` and `secure_transport` stay with the caller; on
+ * success the client owns them.
+ */
+ProtobufCGrpc2Client *protobuf_c_grpc2_client_new(
+	const ProtobufCGrpc2ClientOptions *options);
+
+/**
+ * A ProtobufCService for `descriptor` that talks to the server through this
+ * client. The handle stays valid across reconnects and is owned by the
+ * client (do not free it). Use protobuf_c_grpc2_client_service_set_timeout_ms()
+ * on it for deadlines. When a call cannot be started, the closure is called
+ * with NULL and (for input streaming) the stream is NULL.
+ */
+ProtobufCService *protobuf_c_grpc2_client_get_service(
+	ProtobufCGrpc2Client *client,
+	const ProtobufCServiceDescriptor *descriptor);
+
+/**
+ * Close the connection and free the client. Calls in flight complete with
+ * UNAVAILABLE, which may be reported after this returns, while the event
+ * loop finishes closing the connection; the service handles become invalid
+ * immediately.
+ */
+void protobuf_c_grpc2_client_free(ProtobufCGrpc2Client *client);
 
 #ifdef __cplusplus
 }

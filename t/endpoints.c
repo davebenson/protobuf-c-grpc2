@@ -1,6 +1,6 @@
 /*
- * Builder test: a real libuv server and a real libuv client, both assembled
- * with the builder APIs (with and without TLS), talk to each other. Everything
+ * Endpoint test: a real libuv server and a real libuv client, both created
+ * from options structs (with and without TLS), talk to each other. Everything
  * runs on one libuv loop in this process.
  *
  * Modes: 0 plaintext (h2c), 1 TLS with a trusted certificate,
@@ -8,6 +8,7 @@
  *        (every call must fail, and nothing must leak or hang).
  */
 #include <assert.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +18,7 @@
 #include <openssl/evp.h>
 #include <openssl/x509v3.h>
 
-#include "protobuf-c-grpc2/protobuf-c-grpc2-builder.h"
+#include "protobuf-c-grpc2/protobuf-c-grpc2.h"
 #include "protobuf-c-grpc2/protobuf-c-grpc2-openssl.h"
 #include "protobuf-c-grpc2/protobuf-c-grpc2-uv.h"
 #include "greeter.pb-c.h"
@@ -237,12 +238,78 @@ start_calls(void)
 	example__greeter__say_hello_many(svc2, &req, on_reply, NULL);
 }
 
+/*
+ * Option handling: nothing here starts any I/O. On failure the constructors
+ * leave the I/O system with the caller.
+ */
+static void
+check_option_handling(uv_loop_t *l, ProtobufCService *const *services)
+{
+	ProtobufCService *twice[2] = { services[0], services[0] };
+	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
+	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
+	ProtobufCGrpc2Server *server;
+	ProtobufCGrpc2IoSystem *io = protobuf_c_grpc2_io_system_new_uv(l);
+
+	assert(io != NULL);
+
+	/* a registry for the sans-I/O API: no options, no I/O, cannot listen */
+	server = protobuf_c_grpc2_server_new(NULL);
+	assert(server != NULL);
+	assert(protobuf_c_grpc2_server_add_service(server, services[0]) == 0);
+	assert(protobuf_c_grpc2_server_add_service(server, services[0]) == -1);
+	assert(protobuf_c_grpc2_server_listen(server, "127.0.0.1", 1) == -1);
+	protobuf_c_grpc2_server_free(server);
+
+	/* struct_size is required */
+	so.struct_size = 0;
+	so.io = io;
+	assert(protobuf_c_grpc2_server_new(&so) == NULL);
+	so.struct_size = sizeof so;
+	co.struct_size = 0;
+	assert(protobuf_c_grpc2_client_new(&co) == NULL);
+	co.struct_size = sizeof co;
+
+	/* the same service twice is an error, and `io` stays ours */
+	so.services = twice;
+	so.n_services = 2;
+	assert(protobuf_c_grpc2_server_new(&so) == NULL);
+	/* TLS without an event loop makes no sense */
+	so.services = services;
+	so.n_services = 1;
+	so.io = NULL;
+	so.secure_transport = (ProtobufCGrpc2SecureTransportSystem *) io;
+	assert(protobuf_c_grpc2_server_new(&so) == NULL);
+	so.secure_transport = NULL;
+
+	/* a client needs a host and an I/O system */
+	co.io = io;
+	assert(protobuf_c_grpc2_client_new(&co) == NULL);	/* no host */
+	co.host = "localhost";
+	co.io = NULL;
+	assert(protobuf_c_grpc2_client_new(&co) == NULL);	/* no io */
+
+	/* a struct from an older version of the library (fewer fields) works:
+	 * the newer fields are read as zero, whatever the memory holds */
+	so.io = io;
+	so.max_timeout_ms = 12345;		/* beyond the claimed size */
+	so.struct_size = offsetof(ProtobufCGrpc2ServerOptions, max_message_size);
+	server = protobuf_c_grpc2_server_new(&so);
+	assert(server != NULL);			/* it now owns io */
+	protobuf_c_grpc2_server_free(server);
+	/* let the shutdown complete: it frees the I/O system */
+	uv_run(l, UV_RUN_DEFAULT);
+
+	/* io was still ours after the failures above, which is why using it
+	 * for the last success was legal */
+}
+
 static void
 run(int mode)
 {
-	ProtobufCGrpc2ConnOptions copts;
-	ProtobufCGrpc2ServerBuilder *b;
-	ProtobufCGrpc2ClientBuilder *cb;
+	ProtobufCService *services[] = { NULL };
+	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
+	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	Example__Greeter_Service greeter = EXAMPLE__GREETER__INIT(greeter_);
 	unsigned port = 20000 + ((unsigned) getpid() * 7 + (unsigned) mode) % 20000;
 	EVP_PKEY *key = NULL, *other_key = NULL;
@@ -256,29 +323,21 @@ run(int mode)
 	loop = uv_loop_new();
 	assert(loop != NULL);
 
-	/* an I/O system that is added but never used is destroyed with the builder */
-	b = protobuf_c_grpc2_server_builder_new();
-	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) == 0);
-	protobuf_c_grpc2_server_builder_free(b);
+	services[0] = &greeter.base;
+	check_option_handling(loop, services);
 
-	/* ---- server, from the builder ---- */
-	b = protobuf_c_grpc2_server_builder_new();
-	assert(protobuf_c_grpc2_server_builder_add_service(b, &greeter.base) == 0);
-	assert(protobuf_c_grpc2_server_builder_add_service(b, &greeter.base) == -1);
-	assert(protobuf_c_grpc2_server_from_builder(b) == NULL);	/* no I/O system */
-	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) == 0);
-	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) != 0);	/* only one */
+	/* ---- server and client options ---- */
+	so.services = services;
+	so.n_services = 1;
+	so.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	assert(so.io != NULL);
+	so.on_call_done = NULL;
 
-	/* ---- client, from the builder ---- */
-	cb = protobuf_c_grpc2_client_builder_new();
-	assert(protobuf_c_grpc2_client_from_builder(cb) == NULL);	/* no target */
-	assert(protobuf_c_grpc2_client_builder_set_target(cb, "localhost", port) == 0);
-	assert(protobuf_c_grpc2_client_from_builder(cb) == NULL);	/* no I/O */
-	assert(protobuf_c_grpc2_client_builder_use_uv(cb, loop) == 0);
-	assert(protobuf_c_grpc2_client_builder_use_uv(cb, loop) != 0);
-	memset(&copts, 0, sizeof copts);
-	copts.on_call_done = on_call_done;
-	assert(protobuf_c_grpc2_client_builder_set_options(cb, &copts) == 0);
+	co.host = "localhost";
+	co.port = port;
+	co.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	assert(co.io != NULL);
+	co.on_call_done = on_call_done;
 
 	if (mode > 0) {
 		key = EVP_EC_gen("P-256");
@@ -286,7 +345,9 @@ run(int mode)
 		sctx = SSL_CTX_new(TLS_server_method());
 		assert(SSL_CTX_use_certificate(sctx, cert) == 1);
 		assert(SSL_CTX_use_PrivateKey(sctx, key) == 1);
-		assert(protobuf_c_grpc2_server_builder_use_openssl(b, sctx) == 0);
+		so.secure_transport =
+			protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+		assert(so.secure_transport != NULL);
 		assert(SSL_CTX_get_min_proto_version(sctx) >= TLS1_2_VERSION);
 
 		cctx = SSL_CTX_new(TLS_client_method());
@@ -298,16 +359,16 @@ run(int mode)
 			other_cert = make_cert(other_key, "localhost");
 			X509_STORE_add_cert(SSL_CTX_get_cert_store(cctx), other_cert);
 		}
-		assert(protobuf_c_grpc2_client_builder_use_openssl(cb, cctx) == 0);
+		co.secure_transport =
+			protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
+		assert(co.secure_transport != NULL);
 	}
-	server = protobuf_c_grpc2_server_from_builder(b);
+	server = protobuf_c_grpc2_server_new(&so);
 	assert(server != NULL);
-	protobuf_c_grpc2_server_builder_free(b);
 	assert(protobuf_c_grpc2_server_listen(server, "127.0.0.1", port) == 0);
 
-	client = protobuf_c_grpc2_client_from_builder(cb);
+	client = protobuf_c_grpc2_client_new(&co);
 	assert(client != NULL);
-	protobuf_c_grpc2_client_builder_free(cb);
 	svc = protobuf_c_grpc2_client_get_service(client,
 						  &example__greeter__descriptor);
 	assert(svc != NULL);
@@ -350,11 +411,11 @@ int
 main(void)
 {
 	run(0);
-	puts("builder: plaintext ok");
+	puts("endpoints: plaintext ok");
 	run(1);
-	puts("builder: TLS ok");
+	puts("endpoints: TLS ok");
 	run(2);
-	puts("builder: untrusted certificate rejected ok");
-	puts("builder: ok");
+	puts("endpoints: untrusted certificate rejected ok");
+	puts("endpoints: ok");
 	return 0;
 }

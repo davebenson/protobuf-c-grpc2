@@ -2,8 +2,29 @@
 #ifndef PROTOBUF_C_GRPC2_INTERNAL_H
 #define PROTOBUF_C_GRPC2_INTERNAL_H
 
+#include <string.h>
+
 #include "protobuf-c-grpc2.h"
-#include "protobuf-c-grpc2-builder.h"
+
+/*
+ * Copy a caller's options struct (whose first member is its struct_size)
+ * into a zeroed, current-size one, reading only as many bytes as the caller
+ * says it has. Returns -1 if the caller gave no usable struct_size.
+ */
+static inline int
+protobuf_c_grpc2__copy_options(void *dst, size_t dst_size, const void *src,
+			       size_t src_size)
+{
+	if (src_size < sizeof(size_t))
+		return -1;
+	memset(dst, 0, dst_size);
+	memcpy(dst, src, src_size < dst_size ? src_size : dst_size);
+	*(size_t *) dst = dst_size;
+	return 0;
+}
+#define PROTOBUF_C_GRPC2__COPY_OPTIONS(dst, src) \
+	protobuf_c_grpc2__copy_options((dst), sizeof *(dst), (src), \
+				       (src)->struct_size)
 
 /* ---- connection pump (pump.c): moves bytes between an I/O stream, an
  * optional TLS session and a ProtobufCGrpc2Conn. Used by servers and by
@@ -46,8 +67,8 @@ struct ProtobufCGrpc2Server {
 	ProtobufCService **services;
 	size_t n_services;
 
-	/* Set up by protobuf_c_grpc2_server_from_builder(); NULL io means a
-	 * plain registry for the sans-I/O API. */
+	/* Set up by protobuf_c_grpc2_server_new() when it is given an I/O
+	 * system; NULL io means a plain registry for the sans-I/O API. */
 	ProtobufCGrpc2IoSystem *io;
 	ProtobufCGrpc2SecureTransportSystem *sts;
 	ProtobufCGrpc2ConnOptions conn_options;

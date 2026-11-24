@@ -16,7 +16,7 @@
 
 #include <uv.h>
 
-#include <protobuf-c-grpc2/protobuf-c-grpc2-builder.h>
+#include <protobuf-c-grpc2/protobuf-c-grpc2.h>
 #include <protobuf-c-grpc2/protobuf-c-grpc2-uv.h>
 #ifdef HAVE_OPENSSL
 #include <protobuf-c-grpc2/protobuf-c-grpc2-openssl.h>
@@ -171,19 +171,16 @@ main(int argc, char **argv)
 	/* The INIT macro takes a prefix and appends the lower-cased method
 	 * names: greeter_say_hello, greeter_say_hello_many, greeter_collect. */
 	Example__Greeter_Service greeter = EXAMPLE__GREETER__INIT(greeter_);
+	ProtobufCService *services[] = { &greeter.base };
 	uv_loop_t *loop = uv_default_loop();
 	int port = argc > 1 ? atoi(argv[1]) : 50051;
-	ProtobufCGrpc2ConnOptions opts;
-	ProtobufCGrpc2ServerBuilder *builder;
+	ProtobufCGrpc2ServerOptions opts = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
 	ProtobufCGrpc2Server *server;
 
-	builder = protobuf_c_grpc2_server_builder_new();
-	protobuf_c_grpc2_server_builder_add_service(builder, &greeter.base);
-	protobuf_c_grpc2_server_builder_use_uv(builder, loop);
-
-	memset(&opts, 0, sizeof opts);
+	opts.services = services;
+	opts.n_services = 1;
+	opts.io = protobuf_c_grpc2_io_system_new_uv(loop);
 	opts.on_call_done = on_call_done;
-	protobuf_c_grpc2_server_builder_set_options(builder, &opts);
 
 	if (argc > 3) {
 #ifdef HAVE_OPENSSL
@@ -194,16 +191,16 @@ main(int argc, char **argv)
 			fprintf(stderr, "cannot load certificate/key\n");
 			return 1;
 		}
-		protobuf_c_grpc2_server_builder_use_openssl(builder, ctx);
-		SSL_CTX_free(ctx);	/* the builder holds its own reference */
+		opts.secure_transport =
+			protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+		SSL_CTX_free(ctx);	/* the transport holds its own reference */
 #else
 		fprintf(stderr, "built without OpenSSL: no TLS\n");
 		return 1;
 #endif
 	}
 
-	server = protobuf_c_grpc2_server_from_builder(builder);
-	protobuf_c_grpc2_server_builder_free(builder);
+	server = protobuf_c_grpc2_server_new(&opts);
 	if (server == NULL ||
 	    protobuf_c_grpc2_server_listen(server, "127.0.0.1", (unsigned) port) != 0) {
 		fprintf(stderr, "cannot listen on port %d\n", port);

@@ -382,7 +382,7 @@ int
 main(void)
 {
 	Loopback__Counter_Service impl = LOOPBACK__COUNTER__INIT(impl_);
-	ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new();
+	ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new(NULL);
 	ProtobufCGrpc2ConnOptions copts;
 	ProtobufCGrpc2ConnOptions sopts;
 	ProtobufCGrpc2Conn *cc, *sc;
@@ -391,8 +391,8 @@ main(void)
 	ProtobufCInputStream *in;
 	int i;
 
-	memset(&copts, 0, sizeof copts);
-	memset(&sopts, 0, sizeof sopts);
+	copts = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
+	sopts = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
 	copts.on_call_done = on_done;
 	sopts.on_call_done = on_server_done;
 	assert(server != NULL);

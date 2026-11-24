@@ -1317,8 +1317,14 @@ conn_new(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnOptions *options,
 
 	if (conn == NULL)
 		return NULL;
-	if (options != NULL)
-		conn->options = *options;
+	if (options != NULL) {
+		if (PROTOBUF_C_GRPC2__COPY_OPTIONS(&conn->options, options) != 0) {
+			free(conn);
+			return NULL;
+		}
+	} else {
+		conn->options.struct_size = sizeof conn->options;
+	}
 	conn->is_server = is_server;
 	conn->server = server;
 	conn->max_message_size = conn->options.max_message_size
@@ -1499,12 +1505,6 @@ protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn)
 
 /* ------------------------------------------------------------------ */
 /* server registry */
-
-ProtobufCGrpc2Server *
-protobuf_c_grpc2_server_new(void)
-{
-	return calloc(1, sizeof(ProtobufCGrpc2Server));
-}
 
 void
 protobuf_c_grpc2_server_free(ProtobufCGrpc2Server *server)

@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "protobuf-c-grpc2/protobuf-c-grpc2-builder.h"
+#include "protobuf-c-grpc2/protobuf-c-grpc2.h"
 #include "protobuf-c-grpc2/protobuf-c-grpc2-uv.h"
 #include "greeter.pb-c.h"
 
@@ -67,13 +67,15 @@ static void step_cb(uv_timer_t *t);
 static void
 start_server(void)
 {
-	ProtobufCGrpc2ServerBuilder *b = protobuf_c_grpc2_server_builder_new();
+	ProtobufCService *services[] = { &greeter.base };
+	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
 
-	assert(protobuf_c_grpc2_server_builder_add_service(b, &greeter.base) == 0);
-	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) == 0);
-	server = protobuf_c_grpc2_server_from_builder(b);
+	so.services = services;
+	so.n_services = 1;
+	so.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	assert(so.io != NULL);
+	server = protobuf_c_grpc2_server_new(&so);
 	assert(server != NULL);
-	protobuf_c_grpc2_server_builder_free(b);
 	assert(protobuf_c_grpc2_server_listen(server, "127.0.0.1", port) == 0);
 }
 
@@ -197,20 +199,18 @@ static void
 test_free_while_connecting(void)
 {
 	uv_loop_t *l = uv_loop_new();
-	ProtobufCGrpc2ClientBuilder *cb = protobuf_c_grpc2_client_builder_new();
-	ProtobufCGrpc2ConnOptions o;
+	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	ProtobufCGrpc2Client *c;
 	ProtobufCService *s;
 	Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
 	int rv;
 
-	assert(protobuf_c_grpc2_client_builder_set_target(cb, "localhost", 1) == 0);
-	assert(protobuf_c_grpc2_client_builder_use_uv(cb, l) == 0);
-	memset(&o, 0, sizeof o);
-	o.on_call_done = free_test_call_done;
-	assert(protobuf_c_grpc2_client_builder_set_options(cb, &o) == 0);
-	c = protobuf_c_grpc2_client_from_builder(cb);
-	protobuf_c_grpc2_client_builder_free(cb);
+	co.host = "localhost";
+	co.port = 1;
+	co.io = protobuf_c_grpc2_io_system_new_uv(l);
+	co.on_call_done = free_test_call_done;
+	c = protobuf_c_grpc2_client_new(&co);
+	assert(c != NULL);
 	s = protobuf_c_grpc2_client_get_service(c, &example__greeter__descriptor);
 	req.name = "x";
 	example__greeter__say_hello(s, &req, on_reply, NULL);	/* starts connecting */
@@ -226,8 +226,7 @@ test_free_while_connecting(void)
 int
 main(void)
 {
-	ProtobufCGrpc2ClientBuilder *cb;
-	ProtobufCGrpc2ConnOptions copts;
+	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	int rv;
 
 	greeter = (Example__Greeter_Service) EXAMPLE__GREETER__INIT(greeter_);
@@ -235,16 +234,14 @@ main(void)
 	port = 20000 + ((unsigned) getpid() * 7 + 3) % 20000;
 	loop = uv_loop_new();
 
-	cb = protobuf_c_grpc2_client_builder_new();
-	assert(protobuf_c_grpc2_client_builder_set_target(cb, "127.0.0.1", port) == 0);
-	assert(protobuf_c_grpc2_client_builder_use_uv(cb, loop) == 0);
-	protobuf_c_grpc2_client_builder_set_backoff(cb, 100, 200);
-	memset(&copts, 0, sizeof copts);
-	copts.on_call_done = on_call_done;
-	assert(protobuf_c_grpc2_client_builder_set_options(cb, &copts) == 0);
-	client = protobuf_c_grpc2_client_from_builder(cb);
+	co.host = "127.0.0.1";
+	co.port = port;
+	co.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	co.initial_backoff_ms = 100;
+	co.max_backoff_ms = 200;
+	co.on_call_done = on_call_done;
+	client = protobuf_c_grpc2_client_new(&co);
 	assert(client != NULL);
-	protobuf_c_grpc2_client_builder_free(cb);
 	svc = protobuf_c_grpc2_client_get_service(client,
 						  &example__greeter__descriptor);
 	assert(svc != NULL);

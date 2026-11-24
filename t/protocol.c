@@ -341,7 +341,7 @@ test_server_deadlines(ProtobufCGrpc2Server *server)
 	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
 
 	/* default deadline when the client sends none */
-	memset(&o, 0, sizeof o);
+	o = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
 	o.default_timeout_ms = 20;
 	hold_request(server, &r, NULL, &o, 40, 0);
 	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
@@ -351,7 +351,7 @@ test_server_deadlines(ProtobufCGrpc2Server *server)
 	assert(r.grpc_status == -1);
 
 	/* the cap on what clients may ask for */
-	memset(&o, 0, sizeof o);
+	o = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
 	o.max_timeout_ms = 20;
 	hold_request(server, &r, "100S", &o, 40, 0);
 	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
@@ -372,7 +372,7 @@ static void
 test_server_responses(void)
 {
 	Loopback__Counter_Service impl;
-	ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new();
+	ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new(NULL);
 	Raw r;
 	uint8_t body[256], payload[64];
 	size_t n, pn;
@@ -544,7 +544,7 @@ client_sees_timeout(int mode, int http_status, uint32_t rst_code,
 	nghttp2_settings_default(&st);
 	st.max_concurrent_streams_remote = 10;
 	assert(nghttp2_conn_server_new(&raw, &cb, &st, NULL, &r) == 0);
-	memset(&o, 0, sizeof o);
+	o = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
 	o.on_call_done = cb_done;
 	ours = protobuf_c_grpc2_conn_client_new(&o);
 	svc = protobuf_c_grpc2_conn_client_service(ours, &loopback__counter__descriptor);

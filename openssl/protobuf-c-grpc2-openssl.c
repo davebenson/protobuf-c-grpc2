@@ -232,37 +232,3 @@ protobuf_c_grpc2_secure_transport_system_new_openssl(SSL_CTX *ctx)
 		SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
 	return &sys->base;
 }
-
-int
-protobuf_c_grpc2_server_builder_use_openssl(ProtobufCGrpc2ServerBuilder *builder,
-					    SSL_CTX *ctx)
-{
-	ProtobufCGrpc2SecureTransportSystem *sts =
-		protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
-
-	if (sts == NULL)
-		return -1;
-	if (protobuf_c_grpc2_server_builder_add_secure_transport_system(builder,
-									sts) != 0) {
-		sts->destroy(sts);
-		return -1;
-	}
-	return 0;
-}
-
-int
-protobuf_c_grpc2_client_builder_use_openssl(ProtobufCGrpc2ClientBuilder *builder,
-					    SSL_CTX *ctx)
-{
-	ProtobufCGrpc2SecureTransportSystem *sts =
-		protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
-
-	if (sts == NULL)
-		return -1;
-	if (protobuf_c_grpc2_client_builder_add_secure_transport_system(builder,
-									sts) != 0) {
-		sts->destroy(sts);
-		return -1;
-	}
-	return 0;
-}

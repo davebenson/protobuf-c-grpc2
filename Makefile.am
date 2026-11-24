@@ -17,7 +17,7 @@ EXTRA_DIST = CMakeLists.txt \
 	libprotobuf-c-grpc2.pc.in libprotobuf-c-grpc2-uv.pc.in \
 	libprotobuf-c-grpc2-openssl.pc.in \
 	protobuf-c-grpc2/protobuf-c-grpc2-internal.h \
-	t/loopback.proto t/loopback.c t/builder.c t/client.c t/protocol.c \
+	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh
 
@@ -32,8 +32,7 @@ libprotobuf_c_grpc2_la_LIBADD = $(PROTOBUF_C_LIBS) $(NGHTTP2V2_LIBS)
 libprotobuf_c_grpc2_la_LDFLAGS = -version-info 0:0:0 -no-undefined
 grpc2include_HEADERS += \
 	protobuf-c-grpc2/protobuf-c-grpc2.h \
-	protobuf-c-grpc2/protobuf-c-grpc2-io.h \
-	protobuf-c-grpc2/protobuf-c-grpc2-builder.h
+	protobuf-c-grpc2/protobuf-c-grpc2-io.h
 pkgconfig_DATA += libprotobuf-c-grpc2.pc
 
 # ---- libuv adapter ----
@@ -78,14 +77,14 @@ BUILT_SOURCES += t/loopback.pb-c.c t/loopback.pb-c.h
 CLEANFILES += t/loopback.pb-c.c t/loopback.pb-c.h
 endif
 
-# examples/greeter.pb-c.[ch] is shared by the builder test and the examples.
-if BUILD_BUILDER_TEST
-check_PROGRAMS += t/test-builder
-TESTS += t/test-builder
-t_test_builder_SOURCES = t/builder.c
-nodist_t_test_builder_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
-t_test_builder_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(builddir)/examples
-t_test_builder_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
+# examples/greeter.pb-c.[ch] is shared by the endpoints test and the examples.
+if BUILD_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints
+TESTS += t/test-endpoints
+t_test_endpoints_SOURCES = t/endpoints.c
+nodist_t_test_endpoints_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(builddir)/examples
+t_test_endpoints_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
 	libprotobuf-c-grpc2.la $(LIBUV_LIBS) $(OPENSSL_LIBS)
 
 check_PROGRAMS += t/test-client
@@ -123,7 +122,7 @@ endif
 examples/greeter.pb-c.c examples/greeter.pb-c.h: $(top_srcdir)/examples/greeter.proto
 	$(AM_V_GEN)$(MKDIR_P) examples && $(PROTOC) --plugin=protoc-gen-c=$(PROTOC_GEN_C) -I$(top_srcdir)/examples --c_out=$(top_builddir)/examples $(top_srcdir)/examples/greeter.proto
 CLEANFILES += examples/greeter.pb-c.c examples/greeter.pb-c.h
-if BUILD_BUILDER_TEST
+if BUILD_ENDPOINTS_TEST
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
 else
 if BUILD_EXAMPLES

@@ -6,7 +6,7 @@
 
 #include <uv.h>
 
-#include "protobuf-c-grpc2-builder.h"
+#include "protobuf-c-grpc2.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,17 +14,11 @@ extern "C" {
 
 /**
  * An I/O system that runs on `loop`. Free it with its `destroy` member, or
- * hand it to a builder (which takes ownership). The loop must outlive it.
+ * pass it as the `io` option of a server or client (which then owns it). The loop must outlive it.
  */
 ProtobufCGrpc2IoSystem *protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop);
 
-/** Shorthand for add_io_system(builder, protobuf_c_grpc2_io_system_new_uv(loop)). */
-int protobuf_c_grpc2_server_builder_use_uv(ProtobufCGrpc2ServerBuilder *builder,
-					   uv_loop_t *loop);
 
-/** The same for a client builder. */
-int protobuf_c_grpc2_client_builder_use_uv(ProtobufCGrpc2ClientBuilder *builder,
-					   uv_loop_t *loop);
 
 #ifdef __cplusplus
 }

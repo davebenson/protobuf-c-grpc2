@@ -44,7 +44,7 @@ AC_SUBST([PROTOC])
 AC_SUBST([PROTOC_GEN_C])
 AC_ARG_ENABLE([examples], AS_HELP_STRING([--disable-examples], [do not build the libuv examples]))
 AM_CONDITIONAL([BUILD_TESTS], [test -n "$PROTOC" -a -n "$PROTOC_GEN_C"])
-AM_CONDITIONAL([BUILD_BUILDER_TEST],
+AM_CONDITIONAL([BUILD_ENDPOINTS_TEST],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_uv" = yes -a "$have_openssl" = yes])
 AM_CONDITIONAL([BUILD_EXAMPLES],
                [test "x$enable_examples" != xno -a "$have_uv" = yes -a -n "$PROTOC" -a -n "$PROTOC_GEN_C"])
