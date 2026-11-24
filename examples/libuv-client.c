@@ -1,26 +1,46 @@
 /*
  * libuv-client: a trivial gRPC client using libuv and protobuf-c-grpc2.
  *
- *   usage: libuv-client [host-ip [port [name]]]
- *          (defaults: 127.0.0.1 50051 world)
+ *   usage: libuv-client [host [port [name [ca.pem]]]]
+ *          (defaults: 127.0.0.1 50051 world, and no TLS)
  *
  * Connects to libuv-server and makes three calls at the same time over the
  * one HTTP/2 connection: SayHello (unary), SayHelloMany (server streaming)
  * and Collect (client streaming). Exits when all three have finished; the
  * exit status is nonzero if any call failed.
+ *
+ * With a fourth argument the connection uses TLS, verifying the server's
+ * certificate against that CA file and the name given as `host`.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "uv-grpc2.h"
+#include <uv.h>
+
+#include <protobuf-c-grpc2/protobuf-c-grpc2-builder.h>
+#include <protobuf-c-grpc2/protobuf-c-grpc2-uv.h>
+#ifdef HAVE_OPENSSL
+#include <protobuf-c-grpc2/protobuf-c-grpc2-openssl.h>
+#endif
+
 #include "greeter.pb-c.h"
 
-static UvConn *the_conn;
+static ProtobufCGrpc2Client *client;
+static uv_timer_t finish_timer;
 static int calls_pending;
 static int calls_failed;
-static ProtobufCService *greeter;
 static const char *name = "world";
+
+static void
+finish_cb(uv_timer_t *t)
+{
+	/* Freeing the client from inside one of its own callbacks would be
+	 * unwise, so this runs from a timer on the next loop turn. */
+	(void) t;
+	protobuf_c_grpc2_client_free(client);
+	uv_close((uv_handle_t *) &finish_timer, NULL);
+}
 
 /* Called once for every finished call, whatever its type. This is also
  * where errors show up: closures only see a NULL message. */
@@ -35,12 +55,8 @@ on_call_done(const ProtobufCMethodDescriptor *method, int status,
 	       message ? message : "");
 	if (status != PROTOBUF_C_GRPC2_OK)
 		calls_failed++;
-	/* Closing from inside a grpc2 callback is safe: uvconn_close() only
-	 * starts closing the libuv handles, and the ProtobufCGrpc2Conn is freed from
-	 * their close callbacks, after we have returned. When the connection
-	 * is gone nothing keeps the loop alive and uv_run() returns. */
 	if (--calls_pending == 0)
-		uvconn_close(the_conn);
+		uv_timer_start(&finish_timer, finish_cb, 0, 0);
 }
 
 static void
@@ -54,22 +70,22 @@ on_reply(const Example__HelloReply *reply, void *closure_data)
 }
 
 static void
-start_calls(UvConn *c)
+start_calls(void)
 {
 	Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
+	ProtobufCService *greeter = protobuf_c_grpc2_client_get_service(
+		client, &example__greeter__descriptor);
 	ProtobufCInputStream *in;
 	static const char *const friends[] = { "alice", "bob", "carol" };
 	size_t i;
 
-	greeter = protobuf_c_grpc2_conn_client_service(c->conn,
-					    &example__greeter__descriptor);
 	calls_pending = 3;	/* set up front: calls may finish synchronously */
 
-	/* unary */
+	/* The first call makes the client connect. Calls made before the
+	 * connection is up are queued. */
 	req.name = (char *) name;
 	example__greeter__say_hello(greeter, &req, on_reply, "SayHello");
 
-	/* server streaming */
 	req.count = 3;
 	example__greeter__say_hello_many(greeter, &req, on_reply, "SayHelloMany");
 
@@ -85,52 +101,49 @@ start_calls(UvConn *c)
 	}
 }
 
-static void
-on_connect(uv_connect_t *req, int status)
-{
-	UvConn *c = req->data;
-
-	free(req);
-	if (status < 0) {
-		fprintf(stderr, "connect: %s\n", uv_strerror(status));
-		calls_failed++;
-		uvconn_close(c);
-		return;
-	}
-	uvconn_start(c);
-	start_calls(c);
-}
-
 int
 main(int argc, char **argv)
 {
 	const char *host = argc > 1 ? argv[1] : "127.0.0.1";
-	int port = argc > 2 ? atoi(argv[2]) : 50051;
+	unsigned port = argc > 2 ? (unsigned) atoi(argv[2]) : 50051;
 	uv_loop_t *loop = uv_default_loop();
-	struct sockaddr_in addr;
 	ProtobufCGrpc2ConnOptions opts;
-	uv_connect_t *creq;
-	UvConn *c;
+	ProtobufCGrpc2ClientBuilder *builder;
 
 	if (argc > 3)
 		name = argv[3];
-	if (uv_ip4_addr(host, port, &addr) != 0) {
-		fprintf(stderr, "bad address %s:%d\n", host, port);
-		return 2;
-	}
-	uvconn_loop_init(loop);
 
+	builder = protobuf_c_grpc2_client_builder_new();
+	protobuf_c_grpc2_client_builder_set_target(builder, host, port);
+	protobuf_c_grpc2_client_builder_use_uv(builder, loop);
 	memset(&opts, 0, sizeof opts);
 	opts.on_call_done = on_call_done;
-	opts.authority = host;
-	c = uvconn_new(loop, protobuf_c_grpc2_conn_client_new(&opts));
-	if (c == NULL)
-		return 1;
-	the_conn = c;
+	protobuf_c_grpc2_client_builder_set_options(builder, &opts);
 
-	creq = malloc(sizeof(*creq));
-	creq->data = c;
-	uv_tcp_connect(creq, &c->tcp, (const struct sockaddr *) &addr, on_connect);
+	if (argc > 4) {
+#ifdef HAVE_OPENSSL
+		SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+		if (SSL_CTX_load_verify_locations(ctx, argv[4], NULL) != 1) {
+			fprintf(stderr, "cannot load CA file %s\n", argv[4]);
+			return 2;
+		}
+		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+		protobuf_c_grpc2_client_builder_use_openssl(builder, ctx);
+		SSL_CTX_free(ctx);	/* the builder holds its own reference */
+#else
+		fprintf(stderr, "built without OpenSSL: no TLS\n");
+		return 2;
+#endif
+	}
+
+	client = protobuf_c_grpc2_client_from_builder(builder);
+	protobuf_c_grpc2_client_builder_free(builder);
+	if (client == NULL) {
+		fprintf(stderr, "cannot create the client\n");
+		return 2;
+	}
+	uv_timer_init(loop, &finish_timer);
+	start_calls();
 	uv_run(loop, UV_RUN_DEFAULT);
 	return calls_failed != 0;
 }

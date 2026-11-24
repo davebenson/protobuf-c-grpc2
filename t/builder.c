@@ -1,8 +1,7 @@
 /*
- * Builder test: a real libuv server assembled with the builder API (with
- * and without TLS) is exercised by a client that uses the library's
- * sans-I/O client plus the OpenSSL client transport. Everything runs on one
- * libuv loop in this process.
+ * Builder test: a real libuv server and a real libuv client, both assembled
+ * with the builder APIs (with and without TLS), talk to each other. Everything
+ * runs on one libuv loop in this process.
  *
  * Modes: 0 plaintext (h2c), 1 TLS with a trusted certificate,
  *        2 TLS where the client does not trust the server certificate
@@ -140,164 +139,40 @@ make_cert(EVP_PKEY *key, const char *cn)
 	return x;
 }
 
-/* ---- client harness ---- */
-
-typedef struct {
-	uv_tcp_t tcp;
-	uv_prepare_t check;
-	ProtobufCGrpc2Conn *conn;
-	ProtobufCGrpc2SecureTransport *tls;
-	int closing, handles;
-	char rbuf[16384];
-} TestClient;
+/* ---- the run ---- */
 
 static uv_loop_t *loop;
 static ProtobufCGrpc2Server *server;
-static TestClient *client;
+static ProtobufCGrpc2Client *client;
+static ProtobufCService *svc;
+static uv_timer_t finish_timer;
 static int pending;
 static int n_ok, n_failed, n_deadline;
 static int reply_count;
 static char replies[8][160];
+static int mode_;
+static int probing;			/* a call that must fail synchronously */
+static int fast_fail_status;
 
-static void client_close(TestClient *c);
-
-static void
-client_handle_closed(uv_handle_t *h)
-{
-	TestClient *c = h->data;
-	if (--c->handles > 0)
-		return;
-	protobuf_c_grpc2_conn_free(c->conn);	/* completes unfinished calls */
-	if (c->tls != NULL)
-		c->tls->vtable->destroy(c->tls);
-	free(c);
-	client = NULL;
-	protobuf_c_grpc2_server_free(server);	/* closes server connections */
-	server = NULL;
-}
-
-static void
-client_close(TestClient *c)
-{
-	if (c->closing)
-		return;
-	c->closing = 1;
-	c->handles = 2;
-	uv_read_stop((uv_stream_t *) &c->tcp);
-	uv_close((uv_handle_t *) &c->tcp, client_handle_closed);
-	uv_close((uv_handle_t *) &c->check, client_handle_closed);
-}
-
-static void
-write_done(uv_write_t *req, int status)
-{
-	(void) status;
-	free(req);
-}
-
-static void
-client_send(TestClient *c, const uint8_t *buf, size_t n)
-{
-	uv_write_t *req = malloc(sizeof(*req) + n);
-	uv_buf_t b;
-	memcpy(req + 1, buf, n);
-	b = uv_buf_init((char *) (req + 1), (unsigned) n);
-	if (uv_write(req, (uv_stream_t *) &c->tcp, &b, 1, write_done) != 0)
-		free(req);
-}
-
-static int
-client_ready(TestClient *c)
-{
-	int st;
-	if (c->tls == NULL)
-		return 1;
-	st = c->tls->vtable->handshake_state(c->tls);
-	if (st < 0) {
-		client_close(c);
-		return 0;
-	}
-	if (st == 1) {
-		const char *alpn = c->tls->vtable->alpn(c->tls);
-		assert(alpn != NULL && strcmp(alpn, "h2") == 0);
-	}
-	return st == 1;
-}
-
-static void
-client_flush(uv_prepare_t *chk)
-{
-	TestClient *c = chk->data;
-	uint8_t buf[16384];
-	ssize_t n;
-
-	if (c->closing)
-		return;
-	if (client_ready(c)) {
-		while ((n = protobuf_c_grpc2_conn_write(c->conn, buf, sizeof buf)) > 0) {
-			if (c->tls == NULL)
-				client_send(c, buf, (size_t) n);
-			else
-				c->tls->vtable->write_plaintext(c->tls, buf, (size_t) n);
-		}
-	}
-	if (c->tls != NULL && !c->closing)
-		while ((n = c->tls->vtable->read_ciphertext(c->tls, buf, sizeof buf)) > 0)
-			client_send(c, buf, (size_t) n);
-}
-
-static void
-client_alloc(uv_handle_t *h, size_t sz, uv_buf_t *buf)
-{
-	TestClient *c = h->data;
-	(void) sz;
-	*buf = uv_buf_init(c->rbuf, sizeof c->rbuf);
-}
-
-static void
-client_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf)
-{
-	TestClient *c = s->data;
-	uint8_t plain[16384];
-
-	if (nread < 0) {
-		client_close(c);
-		return;
-	}
-	if (c->tls == NULL) {
-		if (protobuf_c_grpc2_conn_read(c->conn, (const uint8_t *) buf->base,
-					       (size_t) nread) < 0)
-			client_close(c);
-		return;
-	}
-	if (c->tls->vtable->feed_ciphertext(c->tls, (const uint8_t *) buf->base,
-					    (size_t) nread) < 0 ||
-	    !client_ready(c))
-		return;
-	for (;;) {
-		ssize_t n = c->tls->vtable->read_plaintext(c->tls, plain, sizeof plain);
-		if (n <= 0)
-			break;
-		if (protobuf_c_grpc2_conn_read(c->conn, plain, (size_t) n) < 0) {
-			client_close(c);
-			return;
-		}
-	}
-}
+static void finish_cb(uv_timer_t *t);
 
 static void
 on_call_done(const ProtobufCMethodDescriptor *m, int status, const char *msg,
 	     void *ud)
 {
 	(void) m; (void) msg; (void) ud;
+	if (probing) {
+		fast_fail_status = status;
+		return;
+	}
 	if (status == PROTOBUF_C_GRPC2_OK)
 		n_ok++;
 	else
 		n_failed++;
 	if (status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED)
 		n_deadline++;
-	if (--pending == 0 && client != NULL)
-		client_close(client);
+	if (--pending == 0)
+		uv_timer_start(&finish_timer, finish_cb, 0, 0);
 }
 
 static void
@@ -309,10 +184,31 @@ on_reply(const Example__HelloReply *r, void *d)
 }
 
 static void
-start_calls(TestClient *c)
+finish_cb(uv_timer_t *t)
 {
-	ProtobufCService *svc = protobuf_c_grpc2_conn_client_service(
-		c->conn, &example__greeter__descriptor);
+	(void) t;
+	if (mode_ == 2) {
+		/* the failed handshake put the client into backoff: a new call
+		 * must fail at once, from inside invoke() */
+		Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
+		req.name = "again";
+		fast_fail_status = -1;
+		probing = 1;
+		example__greeter__say_hello(svc, &req, on_reply, NULL);
+		probing = 0;
+		assert(fast_fail_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
+	}
+	protobuf_c_grpc2_client_free(client);
+	client = NULL;
+	protobuf_c_grpc2_server_free(server);
+	server = NULL;
+	uv_close((uv_handle_t *) &finish_timer, NULL);
+}
+
+static void
+start_calls(void)
+{
+	ProtobufCService *svc2;
 	Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
 	ProtobufCInputStream *in;
 	int i;
@@ -323,6 +219,7 @@ start_calls(TestClient *c)
 	req.count = 2;
 	example__greeter__say_hello_many(svc, &req, on_reply, NULL);
 	in = example__greeter__collect(svc, NULL, on_reply, NULL);
+	assert(in != NULL);
 	for (i = 1; i <= 4; i++) {
 		req.count = i;
 		in->vtable->send_input(in, &req.base);
@@ -332,24 +229,12 @@ start_calls(TestClient *c)
 
 	/* a call that the server never answers, with a 150 ms deadline: the
 	 * server's own timer (set up by the builder) must end it */
-	{
-		ProtobufCService *svc2 = protobuf_c_grpc2_conn_client_service(
-			c->conn, &example__greeter__descriptor);
-		assert(protobuf_c_grpc2_client_service_set_timeout_ms(svc2, 150) == 0);
-		req.name = "slow";
-		req.count = 1;
-		example__greeter__say_hello_many(svc2, &req, on_reply, NULL);
-	}
-}
-
-static void
-on_connect(uv_connect_t *req, int status)
-{
-	TestClient *c = req->data;
-	free(req);
-	assert(status == 0);
-	uv_read_start((uv_stream_t *) &c->tcp, client_alloc, client_read);
-	start_calls(c);
+	svc2 = protobuf_c_grpc2_client_get_service(client,
+						   &example__greeter__descriptor);
+	assert(protobuf_c_grpc2_client_service_set_timeout_ms(svc2, 150) == 0);
+	req.name = "slow";
+	req.count = 1;
+	example__greeter__say_hello_many(svc2, &req, on_reply, NULL);
 }
 
 static void
@@ -357,33 +242,43 @@ run(int mode)
 {
 	ProtobufCGrpc2ConnOptions copts;
 	ProtobufCGrpc2ServerBuilder *b;
+	ProtobufCGrpc2ClientBuilder *cb;
 	Example__Greeter_Service greeter = EXAMPLE__GREETER__INIT(greeter_);
 	unsigned port = 20000 + ((unsigned) getpid() * 7 + (unsigned) mode) % 20000;
 	EVP_PKEY *key = NULL, *other_key = NULL;
 	X509 *cert = NULL, *other_cert = NULL;
 	SSL_CTX *sctx = NULL, *cctx = NULL;
-	ProtobufCGrpc2SecureTransportSystem *csts = NULL;
-	uv_connect_t *creq;
-	struct sockaddr_in addr;
 	int rv;
 
+	mode_ = mode;
 	n_ok = n_failed = n_deadline = reply_count = 0;
 	slow_closure = NULL;
 	loop = uv_loop_new();
 	assert(loop != NULL);
 
-	/* ---- server, from the builder ---- */
 	/* an I/O system that is added but never used is destroyed with the builder */
 	b = protobuf_c_grpc2_server_builder_new();
 	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) == 0);
 	protobuf_c_grpc2_server_builder_free(b);
 
+	/* ---- server, from the builder ---- */
 	b = protobuf_c_grpc2_server_builder_new();
 	assert(protobuf_c_grpc2_server_builder_add_service(b, &greeter.base) == 0);
 	assert(protobuf_c_grpc2_server_builder_add_service(b, &greeter.base) == -1);
 	assert(protobuf_c_grpc2_server_from_builder(b) == NULL);	/* no I/O system */
 	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) == 0);
 	assert(protobuf_c_grpc2_server_builder_use_uv(b, loop) != 0);	/* only one */
+
+	/* ---- client, from the builder ---- */
+	cb = protobuf_c_grpc2_client_builder_new();
+	assert(protobuf_c_grpc2_client_from_builder(cb) == NULL);	/* no target */
+	assert(protobuf_c_grpc2_client_builder_set_target(cb, "localhost", port) == 0);
+	assert(protobuf_c_grpc2_client_from_builder(cb) == NULL);	/* no I/O */
+	assert(protobuf_c_grpc2_client_builder_use_uv(cb, loop) == 0);
+	assert(protobuf_c_grpc2_client_builder_use_uv(cb, loop) != 0);
+	memset(&copts, 0, sizeof copts);
+	copts.on_call_done = on_call_done;
+	assert(protobuf_c_grpc2_client_builder_set_options(cb, &copts) == 0);
 
 	if (mode > 0) {
 		key = EVP_EC_gen("P-256");
@@ -403,38 +298,22 @@ run(int mode)
 			other_cert = make_cert(other_key, "localhost");
 			X509_STORE_add_cert(SSL_CTX_get_cert_store(cctx), other_cert);
 		}
-		csts = protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
-		assert(csts != NULL);
+		assert(protobuf_c_grpc2_client_builder_use_openssl(cb, cctx) == 0);
 	}
 	server = protobuf_c_grpc2_server_from_builder(b);
 	assert(server != NULL);
 	protobuf_c_grpc2_server_builder_free(b);
 	assert(protobuf_c_grpc2_server_listen(server, "127.0.0.1", port) == 0);
 
-	/* ---- client ---- */
-	memset(&copts, 0, sizeof copts);
-	copts.on_call_done = on_call_done;
-	copts.authority = "localhost";
-	copts.scheme = mode > 0 ? "https" : "http";
-	client = calloc(1, sizeof(*client));
-	client->conn = protobuf_c_grpc2_conn_client_new(&copts);
-	if (csts != NULL) {
-		client->tls = csts->new_client(csts, "localhost");
-		assert(client->tls != NULL);
-	}
-	uv_tcp_init(loop, &client->tcp);
-	uv_prepare_init(loop, &client->check);
-	client->tcp.data = client;
-	client->check.data = client;
-	uv_prepare_start(&client->check, client_flush);
-	uv_unref((uv_handle_t *) &client->check);
-	creq = malloc(sizeof(*creq));
-	creq->data = client;
-	uv_ip4_addr("127.0.0.1", (int) port, &addr);
-	rv = uv_tcp_connect(creq, &client->tcp, (const struct sockaddr *) &addr,
-			    on_connect);
-	assert(rv == 0);
+	client = protobuf_c_grpc2_client_from_builder(cb);
+	assert(client != NULL);
+	protobuf_c_grpc2_client_builder_free(cb);
+	svc = protobuf_c_grpc2_client_get_service(client,
+						  &example__greeter__descriptor);
+	assert(svc != NULL);
 
+	uv_timer_init(loop, &finish_timer);
+	start_calls();
 	uv_run(loop, UV_RUN_DEFAULT);
 
 	/* ---- results ---- */
@@ -459,8 +338,6 @@ run(int mode)
 	assert(rv == 0);
 	free(loop);
 
-	if (csts != NULL)
-		csts->destroy(csts);
 	SSL_CTX_free(cctx);
 	SSL_CTX_free(sctx);
 	X509_free(cert);

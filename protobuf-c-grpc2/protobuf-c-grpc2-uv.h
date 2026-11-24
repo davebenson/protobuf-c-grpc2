@@ -22,6 +22,10 @@ ProtobufCGrpc2IoSystem *protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop);
 int protobuf_c_grpc2_server_builder_use_uv(ProtobufCGrpc2ServerBuilder *builder,
 					   uv_loop_t *loop);
 
+/** The same for a client builder. */
+int protobuf_c_grpc2_client_builder_use_uv(ProtobufCGrpc2ClientBuilder *builder,
+					   uv_loop_t *loop);
+
 #ifdef __cplusplus
 }
 #endif

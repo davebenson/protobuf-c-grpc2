@@ -69,6 +69,25 @@ struct ProtobufCGrpc2IoSystem {
 	 *  called after this returns. */
 	void (*unlisten)(ProtobufCGrpc2IoSystem *io, void *listener);
 
+	/**
+	 * Connect to host:port. `host` may be a name; the adapter resolves it
+	 * and tries the addresses in order. Completion is always reported
+	 * asynchronously (never from inside this call) as
+	 * `connected(connected_data, stream, error)`: on success `stream` is a
+	 * new stream and `error` is 0; otherwise `stream` is NULL and `error`
+	 * is a nonzero, adapter specific code. `*handle` identifies the attempt
+	 * until `connected` has been called. Returns 0, or -1 if it cannot
+	 * even start (and then `connected` is not called).
+	 */
+	int (*connect)(ProtobufCGrpc2IoSystem *io, const char *host,
+		       unsigned port,
+		       void (*connected)(void *connected_data, void *stream,
+					 int error),
+		       void *connected_data, void **handle);
+	/** Abandon a connection attempt that has not completed; `connected`
+	 *  is then not called. */
+	void (*cancel_connect)(ProtobufCGrpc2IoSystem *io, void *handle);
+
 	/** Begin reading from a stream and delivering events to `handler`. */
 	int (*stream_start)(ProtobufCGrpc2IoSystem *io, void *stream,
 			    const ProtobufCGrpc2IoHandler *handler);

@@ -32,6 +32,14 @@ protobuf_c_grpc2_secure_transport_system_new_openssl(SSL_CTX *ctx);
 int protobuf_c_grpc2_server_builder_use_openssl(
 	ProtobufCGrpc2ServerBuilder *builder, SSL_CTX *ctx);
 
+/**
+ * The same for a client builder. Give `ctx` the trust roots to verify the
+ * server with and SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL); the name
+ * checked is the builder's server name (default: the target host).
+ */
+int protobuf_c_grpc2_client_builder_use_openssl(
+	ProtobufCGrpc2ClientBuilder *builder, SSL_CTX *ctx);
+
 #ifdef __cplusplus
 }
 #endif

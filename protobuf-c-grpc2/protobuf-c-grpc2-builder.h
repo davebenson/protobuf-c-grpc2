@@ -73,6 +73,93 @@ ProtobufCGrpc2Server *protobuf_c_grpc2_server_from_builder(
 int protobuf_c_grpc2_server_listen(ProtobufCGrpc2Server *server,
 				   const char *host, unsigned port);
 
+/* ------------------------------------------------------------------ */
+/* Clients */
+
+/*
+ * A client is a "channel" to one server (host and port). It connects lazily
+ * on the first call and queues calls until the connection is ready. If the
+ * connection is lost, calls in flight fail with UNAVAILABLE and the next
+ * call reconnects. If a connection attempt fails (or the connection is
+ * lost before the server ever answered), the client backs off: calls made
+ * during the backoff fail at once with UNAVAILABLE, and the delay grows
+ * exponentially up to a maximum.
+ *
+ *   ProtobufCGrpc2ClientBuilder *b = protobuf_c_grpc2_client_builder_new();
+ *   protobuf_c_grpc2_client_builder_set_target(b, "example.com", 50051);
+ *   protobuf_c_grpc2_client_builder_use_uv(b, loop);          // -uv library
+ *   protobuf_c_grpc2_client_builder_use_openssl(b, ssl_ctx);  // optional TLS
+ *   ProtobufCGrpc2Client *client = protobuf_c_grpc2_client_from_builder(b);
+ *   protobuf_c_grpc2_client_builder_free(b);
+ *   ProtobufCService *svc = protobuf_c_grpc2_client_get_service(client, &desc);
+ *   ... call through svc with the generated callers ...
+ *   protobuf_c_grpc2_client_free(client);
+ */
+typedef struct ProtobufCGrpc2ClientBuilder ProtobufCGrpc2ClientBuilder;
+typedef struct ProtobufCGrpc2Client ProtobufCGrpc2Client;
+
+ProtobufCGrpc2ClientBuilder *protobuf_c_grpc2_client_builder_new(void);
+void protobuf_c_grpc2_client_builder_free(ProtobufCGrpc2ClientBuilder *builder);
+
+/** The server to talk to. `host` may be a name. Returns 0, or -1. */
+int protobuf_c_grpc2_client_builder_set_target(
+	ProtobufCGrpc2ClientBuilder *builder, const char *host, unsigned port);
+
+/** The name used for TLS (SNI and certificate verification); defaults to
+ *  the target host. Returns 0, or -1. */
+int protobuf_c_grpc2_client_builder_set_server_name(
+	ProtobufCGrpc2ClientBuilder *builder, const char *server_name);
+
+/** Connection options: default_timeout_ms, on_call_done, max_message_size,
+ *  and the `:authority` (default "host:port"). Strings are copied. */
+int protobuf_c_grpc2_client_builder_set_options(
+	ProtobufCGrpc2ClientBuilder *builder,
+	const ProtobufCGrpc2ConnOptions *options);
+
+/** Reconnection backoff (default 1000 ms growing by x1.6 up to 120000 ms)
+ *  and how long a connection attempt may take (default 20000 ms, 0 =
+ *  unlimited). */
+void protobuf_c_grpc2_client_builder_set_backoff(
+	ProtobufCGrpc2ClientBuilder *builder, uint64_t initial_ms,
+	uint64_t max_ms);
+void protobuf_c_grpc2_client_builder_set_connect_timeout_ms(
+	ProtobufCGrpc2ClientBuilder *builder, uint64_t ms);
+
+/** As for the server builder: ownership passes to the builder. */
+int protobuf_c_grpc2_client_builder_add_io_system(
+	ProtobufCGrpc2ClientBuilder *builder, ProtobufCGrpc2IoSystem *io);
+/** Optional: use TLS (the server must negotiate ALPN "h2"). */
+int protobuf_c_grpc2_client_builder_add_secure_transport_system(
+	ProtobufCGrpc2ClientBuilder *builder,
+	ProtobufCGrpc2SecureTransportSystem *sts);
+
+/**
+ * Create the client; no connection is made until the first call. Needs a
+ * target and an I/O system, else returns NULL. The components move to the
+ * client, so the builder can be freed.
+ */
+ProtobufCGrpc2Client *protobuf_c_grpc2_client_from_builder(
+	ProtobufCGrpc2ClientBuilder *builder);
+
+/**
+ * A ProtobufCService for `descriptor` that talks to the server through this
+ * client. The handle stays valid across reconnects and is owned by the
+ * client (do not free it). Use protobuf_c_grpc2_client_service_set_timeout_ms()
+ * on it for deadlines. When a call cannot be started, the closure is called
+ * with NULL and (for input streaming) the call is NULL.
+ */
+ProtobufCService *protobuf_c_grpc2_client_get_service(
+	ProtobufCGrpc2Client *client,
+	const ProtobufCServiceDescriptor *descriptor);
+
+/**
+ * Close the connection and free the client. Calls in flight complete with
+ * UNAVAILABLE, which may be reported after this returns, while the event
+ * loop finishes closing the connection; the service handles become invalid
+ * immediately.
+ */
+void protobuf_c_grpc2_client_free(ProtobufCGrpc2Client *client);
+
 #ifdef __cplusplus
 }
 #endif

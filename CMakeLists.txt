@@ -50,7 +50,9 @@ endfunction()
 # ---- core ----
 add_library(protobuf-c-grpc2
   protobuf-c-grpc2/protobuf-c-grpc2.c
-  protobuf-c-grpc2/protobuf-c-grpc2-server.c)
+  protobuf-c-grpc2/protobuf-c-grpc2-pump.c
+  protobuf-c-grpc2/protobuf-c-grpc2-server.c
+  protobuf-c-grpc2/protobuf-c-grpc2-client.c)
 target_include_directories(protobuf-c-grpc2 PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/protobuf-c-grpc2>
@@ -146,6 +148,14 @@ if(BUILD_TESTS)
       protobuf-c-grpc2-openssl)
     add_test(NAME builder COMMAND test-builder)
     set_tests_properties(builder PROPERTIES TIMEOUT 60)
+
+    add_executable(test-client t/client.c
+      ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+    target_include_directories(test-client PRIVATE
+      ${CMAKE_CURRENT_BINARY_DIR}/examples)
+    target_link_libraries(test-client protobuf-c-grpc2-uv)
+    add_test(NAME client COMMAND test-client)
+    set_tests_properties(client PROPERTIES TIMEOUT 60)
   endif()
 endif()
 

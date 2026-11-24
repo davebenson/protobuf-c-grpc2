@@ -34,7 +34,9 @@ struct ProtobufCGrpc2Conn {
 struct ClientService {
 	ProtobufCService base;		/* must be first */
 	uint64_t timeout_ms;		/* 0: calls have no deadline */
-	ProtobufCGrpc2Conn *conn;
+	ProtobufCGrpc2Client *client;	/* channel mode: the connection comes
+					 * from here (it may change) */
+	ProtobufCGrpc2Conn *conn;	/* direct mode */
 	ClientService *next;
 };
 
@@ -933,7 +935,8 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	      void *closure_data)
 {
 	ClientService *cs = (ClientService *) service;
-	ProtobufCGrpc2Conn *conn = cs->conn;
+	ProtobufCGrpc2Conn *conn = cs->client
+		? protobuf_c_grpc2__client_acquire_conn(cs->client) : cs->conn;
 	unsigned index = index_and_flags & ~PROTOBUF_C_STREAMING_MASK;
 	unsigned flags = index_and_flags & PROTOBUF_C_STREAMING_MASK;
 	const ProtobufCServiceDescriptor *d = service->descriptor;
@@ -952,6 +955,18 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	m = &d->methods[index];
 	assert(flags == (m->flags & PROTOBUF_C_STREAMING_MASK));
 
+	if (conn == NULL && cs->client != NULL && m->name != NULL) {
+		/* the client is backing off after a failed connection attempt */
+		const ProtobufCGrpc2ConnOptions *o =
+			protobuf_c_grpc2__client_options(cs->client);
+		if (o->on_call_done != NULL)
+			o->on_call_done(m, PROTOBUF_C_GRPC2_UNAVAILABLE,
+					"connection failed; backing off",
+					o->user_data);
+		if (closure != NULL)
+			closure(NULL, closure_data);
+		return NULL;
+	}
 	if (conn == NULL || conn->ng == NULL || m->name == NULL || d->name == NULL) {
 		if (closure != NULL)
 			closure(NULL, closure_data);
@@ -1049,6 +1064,29 @@ protobuf_c_grpc2_conn_client_service(ProtobufCGrpc2Conn *conn,
 	cs->next = conn->client_services;
 	conn->client_services = cs;
 	return &cs->base;
+}
+
+ProtobufCService *
+protobuf_c_grpc2__client_service_new(ProtobufCGrpc2Client *client,
+				     const ProtobufCServiceDescriptor *descriptor,
+				     uint64_t timeout_ms)
+{
+	ClientService *cs = calloc(1, sizeof(*cs));
+
+	if (cs == NULL)
+		return NULL;
+	cs->base.descriptor = descriptor;
+	cs->base.invoke = client_invoke;
+	cs->base.destroy = client_service_destroy;
+	cs->timeout_ms = timeout_ms;
+	cs->client = client;
+	return &cs->base;
+}
+
+void
+protobuf_c_grpc2__client_service_free(ProtobufCService *service)
+{
+	free(service);
 }
 
 int

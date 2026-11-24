@@ -86,9 +86,10 @@ uv_stream_start_(ProtobufCGrpc2IoSystem *io, void *stream,
 	(void) io;
 
 	s->handler = *handler;
-	s->started = 1;
-	return uv_read_start((uv_stream_t *) &s->tcp, stream_alloc, stream_read) != 0
-		? -1 : 0;
+	if (uv_read_start((uv_stream_t *) &s->tcp, stream_alloc, stream_read) != 0)
+		return -1;
+	s->started = 1;		/* only now will `closed` be reported */
+	return 0;
 }
 
 static void
@@ -188,6 +189,160 @@ uv_unlisten_(ProtobufCGrpc2IoSystem *io, void *listener)
 	uv_close((uv_handle_t *) &l->tcp, free_handle);
 }
 
+/* ---- connecting ---- */
+
+typedef struct UvConnect {
+	uv_getaddrinfo_t gai;		/* must be first */
+	uv_connect_t creq;
+	UvIo *io;
+	struct addrinfo *res, *cur;
+	UvStream *stream;		/* the attempt in flight */
+	void (*connected)(void *, void *, int);
+	void *data;
+	int cancelled;
+	int outstanding;		/* getaddrinfo / connect requests in flight */
+} UvConnect;
+
+static void
+connect_destroy_if_idle(UvConnect *uc)
+{
+	if (uc->outstanding > 0)
+		return;
+	if (uc->res != NULL)
+		uv_freeaddrinfo(uc->res);
+	free(uc);
+}
+
+static void
+connect_try_next(UvConnect *uc);
+
+static void
+connect_failed(UvConnect *uc, int error)
+{
+	void (*cb)(void *, void *, int) = uc->connected;
+	void *data = uc->data;
+
+	connect_destroy_if_idle(uc);
+	cb(data, NULL, error);
+}
+
+static void
+on_connect_done(uv_connect_t *req, int status)
+{
+	UvConnect *uc = req->data;
+	UvStream *s = uc->stream;
+
+	uc->outstanding--;
+	uc->stream = NULL;
+	if (uc->cancelled) {		/* cancel_connect closed the stream */
+		connect_destroy_if_idle(uc);
+		return;
+	}
+	if (status == 0) {
+		void (*cb)(void *, void *, int) = uc->connected;
+		void *data = uc->data;
+		connect_destroy_if_idle(uc);
+		cb(data, s, 0);
+		return;
+	}
+	uv_close((uv_handle_t *) &s->tcp, stream_closed);	/* never started */
+	if (uc->cur != NULL && uc->cur->ai_next != NULL) {
+		uc->cur = uc->cur->ai_next;
+		connect_try_next(uc);
+		return;
+	}
+	connect_failed(uc, status);
+}
+
+static void
+connect_try_next(UvConnect *uc)
+{
+	UvStream *s = calloc(1, sizeof(*s));
+	int rv;
+
+	if (s == NULL) {
+		connect_failed(uc, UV_ENOMEM);
+		return;
+	}
+	uv_tcp_init(uc->io->loop, &s->tcp);
+	uc->stream = s;
+	uc->creq.data = uc;
+	rv = uv_tcp_connect(&uc->creq, &s->tcp, uc->cur->ai_addr, on_connect_done);
+	if (rv != 0) {
+		uc->stream = NULL;
+		uv_close((uv_handle_t *) &s->tcp, stream_closed);
+		if (uc->cur->ai_next != NULL) {
+			uc->cur = uc->cur->ai_next;
+			connect_try_next(uc);
+		} else {
+			connect_failed(uc, rv);
+		}
+		return;
+	}
+	uc->outstanding++;
+}
+
+static void
+on_resolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
+{
+	UvConnect *uc = (UvConnect *) req;
+
+	uc->outstanding--;
+	uc->res = res;			/* freed with uc */
+	if (uc->cancelled) {
+		connect_destroy_if_idle(uc);
+		return;
+	}
+	if (status != 0 || res == NULL) {
+		connect_failed(uc, status != 0 ? status : UV_EAI_NONAME);
+		return;
+	}
+	uc->cur = res;
+	connect_try_next(uc);
+}
+
+static int
+uv_connect_(ProtobufCGrpc2IoSystem *io, const char *host, unsigned port,
+	    void (*connected)(void *, void *, int), void *data, void **handle)
+{
+	UvConnect *uc = calloc(1, sizeof(*uc));
+	struct addrinfo hints;
+	char portstr[16];
+
+	if (uc == NULL)
+		return -1;
+	uc->io = (UvIo *) io;
+	uc->connected = connected;
+	uc->data = data;
+	snprintf(portstr, sizeof portstr, "%u", port);
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	uc->outstanding = 1;
+	if (uv_getaddrinfo(uc->io->loop, &uc->gai, on_resolved, host, portstr,
+			   &hints) != 0) {
+		free(uc);
+		return -1;
+	}
+	*handle = uc;
+	return 0;
+}
+
+static void
+uv_cancel_connect_(ProtobufCGrpc2IoSystem *io, void *handle)
+{
+	UvConnect *uc = handle;
+	(void) io;
+
+	uc->cancelled = 1;
+	if (uc->stream != NULL) {
+		/* the pending connect request completes with UV_ECANCELED */
+		uv_close((uv_handle_t *) &uc->stream->tcp, stream_closed);
+	} else if (uc->outstanding > 0) {
+		uv_cancel((uv_req_t *) &uc->gai);	/* may be too late: fine */
+	}
+}
+
 /* ---- timers and hooks ---- */
 
 static void
@@ -282,6 +437,8 @@ protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
 	io->loop = loop;
 	io->base.listen = uv_listen_;
 	io->base.unlisten = uv_unlisten_;
+	io->base.connect = uv_connect_;
+	io->base.cancel_connect = uv_cancel_connect_;
 	io->base.stream_start = uv_stream_start_;
 	io->base.stream_write = uv_stream_write_;
 	io->base.stream_close = uv_stream_close_;
@@ -304,6 +461,21 @@ protobuf_c_grpc2_server_builder_use_uv(ProtobufCGrpc2ServerBuilder *builder,
 	if (io == NULL)
 		return -1;
 	if (protobuf_c_grpc2_server_builder_add_io_system(builder, io) != 0) {
+		io->destroy(io);
+		return -1;
+	}
+	return 0;
+}
+
+int
+protobuf_c_grpc2_client_builder_use_uv(ProtobufCGrpc2ClientBuilder *builder,
+				       uv_loop_t *loop)
+{
+	ProtobufCGrpc2IoSystem *io = protobuf_c_grpc2_io_system_new_uv(loop);
+
+	if (io == NULL)
+		return -1;
+	if (protobuf_c_grpc2_client_builder_add_io_system(builder, io) != 0) {
 		io->destroy(io);
 		return -1;
 	}
