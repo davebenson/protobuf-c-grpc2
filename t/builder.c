@@ -39,6 +39,9 @@ greeter_say_hello(Example__Greeter_Service *s, const Example__HelloRequest *req,
 	free(text);
 }
 
+static Example__HelloReply_Closure slow_closure;
+static void *slow_closure_data;
+
 static void
 greeter_say_hello_many(Example__Greeter_Service *s,
 		       const Example__HelloRequest *req,
@@ -46,6 +49,12 @@ greeter_say_hello_many(Example__Greeter_Service *s,
 {
 	int i;
 	(void) s;
+	if (strcmp(req->name, "slow") == 0) {
+		/* never answers by itself: only the deadline can end this call */
+		slow_closure = cl;
+		slow_closure_data = d;
+		return;
+	}
 	for (i = 1; i <= req->count; i++) {
 		Example__HelloReply reply = EXAMPLE__HELLO_REPLY__INIT;
 		char text[64];
@@ -135,7 +144,7 @@ make_cert(EVP_PKEY *key, const char *cn)
 
 typedef struct {
 	uv_tcp_t tcp;
-	uv_check_t check;
+	uv_prepare_t check;
 	ProtobufCGrpc2Conn *conn;
 	ProtobufCGrpc2SecureTransport *tls;
 	int closing, handles;
@@ -146,7 +155,7 @@ static uv_loop_t *loop;
 static ProtobufCGrpc2Server *server;
 static TestClient *client;
 static int pending;
-static int n_ok, n_failed;
+static int n_ok, n_failed, n_deadline;
 static int reply_count;
 static char replies[8][160];
 
@@ -216,7 +225,7 @@ client_ready(TestClient *c)
 }
 
 static void
-client_flush(uv_check_t *chk)
+client_flush(uv_prepare_t *chk)
 {
 	TestClient *c = chk->data;
 	uint8_t buf[16384];
@@ -285,6 +294,8 @@ on_call_done(const ProtobufCMethodDescriptor *m, int status, const char *msg,
 		n_ok++;
 	else
 		n_failed++;
+	if (status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED)
+		n_deadline++;
 	if (--pending == 0 && client != NULL)
 		client_close(client);
 }
@@ -306,7 +317,7 @@ start_calls(TestClient *c)
 	ProtobufCInputStream *in;
 	int i;
 
-	pending = 3;
+	pending = 4;
 	req.name = "tls";
 	example__greeter__say_hello(svc, &req, on_reply, NULL);
 	req.count = 2;
@@ -318,6 +329,17 @@ start_calls(TestClient *c)
 	}
 	in->vtable->send_input(in, NULL);
 	in->vtable->destroy(in);
+
+	/* a call that the server never answers, with a 150 ms deadline: the
+	 * server's own timer (set up by the builder) must end it */
+	{
+		ProtobufCService *svc2 = protobuf_c_grpc2_conn_client_service(
+			c->conn, &example__greeter__descriptor);
+		assert(protobuf_c_grpc2_client_service_set_timeout_ms(svc2, 150) == 0);
+		req.name = "slow";
+		req.count = 1;
+		example__greeter__say_hello_many(svc2, &req, on_reply, NULL);
+	}
 }
 
 static void
@@ -345,7 +367,8 @@ run(int mode)
 	struct sockaddr_in addr;
 	int rv;
 
-	n_ok = n_failed = reply_count = 0;
+	n_ok = n_failed = n_deadline = reply_count = 0;
+	slow_closure = NULL;
 	loop = uv_loop_new();
 	assert(loop != NULL);
 
@@ -400,10 +423,10 @@ run(int mode)
 		assert(client->tls != NULL);
 	}
 	uv_tcp_init(loop, &client->tcp);
-	uv_check_init(loop, &client->check);
+	uv_prepare_init(loop, &client->check);
 	client->tcp.data = client;
 	client->check.data = client;
-	uv_check_start(&client->check, client_flush);
+	uv_prepare_start(&client->check, client_flush);
 	uv_unref((uv_handle_t *) &client->check);
 	creq = malloc(sizeof(*creq));
 	creq->data = client;
@@ -416,10 +439,11 @@ run(int mode)
 
 	/* ---- results ---- */
 	if (mode == 2) {
-		assert(n_ok == 0 && n_failed == 3 && reply_count == 0);
+		assert(n_ok == 0 && n_failed == 4 && reply_count == 0);
 	} else {
 		int i, found_hello = 0, found_total = 0, found_2 = 0;
-		assert(n_ok == 3 && n_failed == 0);
+		assert(n_ok == 3 && n_failed == 1 && n_deadline == 1);
+		assert(slow_closure != NULL);
 		assert(reply_count == 4);
 		for (i = 0; i < reply_count; i++) {
 			found_hello |= strcmp(replies[i], "Hello, tls!") == 0;
@@ -429,6 +453,8 @@ run(int mode)
 		assert(found_hello && found_2 && found_total);
 	}
 	assert(server == NULL && client == NULL);
+	if (slow_closure != NULL)
+		slow_closure(NULL, slow_closure_data);	/* ends it; frees the call */
 	rv = uv_loop_close(loop);		/* fails if any handle leaked */
 	assert(rv == 0);
 	free(loop);

@@ -61,6 +61,19 @@ typedef struct ProtobufCGrpc2ConnOptions {
 	/** Client only: `:scheme` header, "http" (default) or "https". */
 	const char *scheme;
 	/**
+	 * Client: the timeout (ms, 0 = none) that service handles start with;
+	 * see protobuf_c_grpc2_client_service_set_timeout_ms().
+	 * Server: the deadline (ms, 0 = none) applied to calls whose client
+	 * sent no `grpc-timeout`.
+	 */
+	uint64_t default_timeout_ms;
+	/**
+	 * Server: the longest deadline (ms, 0 = unlimited) a client may ask
+	 * for; longer `grpc-timeout` values are cut down to this. Calls with
+	 * no deadline are not affected (use default_timeout_ms for those).
+	 */
+	uint64_t max_timeout_ms;
+	/**
 	 * Optional. Called when a call finishes, on the client and the server
 	 * alike. This is how errors are reported for calls whose closure only
 	 * sees a NULL message. `message` may be NULL. `method` is NULL on the
@@ -121,8 +134,11 @@ int protobuf_c_grpc2_conn_read(ProtobufCGrpc2Conn *conn, const uint8_t *data, si
  */
 ssize_t protobuf_c_grpc2_conn_write(ProtobufCGrpc2Conn *conn, uint8_t *buf, size_t len);
 
-/** Absolute time (CLOCK_MONOTONIC ns) at which protobuf_c_grpc2_conn_handle_expiry()
- *  must next be called, or UINT64_MAX for none. */
+/**
+ * Absolute time (CLOCK_MONOTONIC ns) at which
+ * protobuf_c_grpc2_conn_handle_expiry() must next be called, or UINT64_MAX
+ * for none. Covers protocol timers and the deadlines of calls.
+ */
 uint64_t protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn);
 /**
  * Nanoseconds until protobuf_c_grpc2_conn_handle_expiry() must be called: 0 if that is
@@ -131,9 +147,28 @@ uint64_t protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn);
  * behind the absolute time may differ from the loop's.
  */
 int64_t protobuf_c_grpc2_conn_get_timeout_ns(const ProtobufCGrpc2Conn *conn);
-/** Handle expired timers. Returns a negative value if the connection must
- *  be closed. */
+/**
+ * Handle expired timers, including call deadlines: a client call past its
+ * deadline is cancelled (RST_STREAM CANCEL) and completes with
+ * PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED; a server call is answered with
+ * DEADLINE_EXCEEDED. (The service handler is not told: it can keep running
+ * and its later responses are ignored.) Returns a negative value if the
+ * connection must be closed. Must not free the connection from the
+ * callbacks it triggers.
+ */
 int protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn);
+
+/**
+ * Set the timeout for calls made through this client service handle from now
+ * on (0 = no deadline). The deadline runs from the moment the call is
+ * started and covers the whole call, streaming included; it is also sent to
+ * the server as `grpc-timeout`. Handles are cheap and independent, so for
+ * different timeouts, get one handle per timeout from
+ * protobuf_c_grpc2_conn_client_service(). Returns -1 if `service` is not a
+ * client service of this library.
+ */
+int protobuf_c_grpc2_client_service_set_timeout_ms(ProtobufCService *service,
+						   uint64_t timeout_ms);
 
 /**
  * Get a client-side ProtobufCService for the given service descriptor. Use

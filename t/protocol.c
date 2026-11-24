@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <nghttp2v2/nghttp2.h>
 
@@ -41,6 +42,35 @@ impl_unary(Loopback__Counter_Service *s, const Loopback__Req *in,
 	cl(&rsp, d);
 }
 
+/* Hold: accepts a request stream and never answers; counts its releases. */
+static int sinks_destroyed;
+
+static protobuf_c_boolean
+null_send(ProtobufCInputStream *st, const ProtobufCMessage *m)
+{
+	(void) st; (void) m;
+	return 1;
+}
+
+static void
+null_destroy(ProtobufCInputStream *st)
+{
+	sinks_destroyed++;
+	free(st);
+}
+
+static const ProtobufCInputStreamVTable null_vtable = { null_send, null_destroy };
+
+static ProtobufCInputStream *
+impl_hold(Loopback__Counter_Service *s, const Loopback__Req *in,
+	  Loopback__Rsp_Closure cl, void *d)
+{
+	ProtobufCInputStream *st = calloc(1, sizeof(*st));
+	(void) s; (void) in; (void) cl; (void) d;
+	st->vtable = &null_vtable;
+	return st;
+}
+
 /* ---- raw peer plumbing ---- */
 
 typedef struct {
@@ -57,9 +87,16 @@ typedef struct {
 	const uint8_t *body;
 	size_t bodylen;
 	int sent_body;
+	/* deadlines (server tests) */
+	const char *timeout;			/* grpc-timeout to send */
+	const ProtobufCGrpc2ConnOptions *sopts;	/* options for our server */
+	unsigned wait_ms;			/* then handle_expiry() */
+	int expect_open;			/* still open after the wait */
+	int64_t timeout_seen;			/* get_timeout_ns() before waiting */
 	/* for the raw server */
 	int mode;
 	int closed;
+	char timeout_hdr[32];			/* grpc-timeout the client sent */
 } Raw;
 
 static void
@@ -78,6 +115,8 @@ raw_clear(Raw *r)
 	r->reset_code = 0;
 	r->closed = 0;
 	r->sent_body = 0;
+	r->timeout_hdr[0] = 0;
+	r->timeout_seen = -2;
 }
 
 static int
@@ -93,6 +132,9 @@ raw_recv_field(nghttp2_conn *c, int64_t id, int32_t token, nghttp2_rcbuf *name,
 		r->status = atoi((const char *) v.base);
 	} else if (n.len == 11 && memcmp(n.base, "grpc-status", 11) == 0) {
 		r->grpc_status = atoi((const char *) v.base);
+	} else if (n.len == 12 && memcmp(n.base, "grpc-timeout", 12) == 0) {
+		snprintf(r->timeout_hdr, sizeof r->timeout_hdr, "%.*s",
+			 (int) v.len, v.base);
 	} else if (n.len == 12 && memcmp(n.base, "grpc-message", 12) == 0) {
 		snprintf(r->grpc_message, sizeof r->grpc_message, "%.*s",
 			 (int) v.len, v.base);
@@ -214,7 +256,7 @@ raw_request(ProtobufCGrpc2Server *server, Raw *r)
 	raw_callbacks(&cb);
 	nghttp2_settings_default(&st);
 	assert(nghttp2_conn_client_new(&raw, &cb, &st, NULL, r) == 0);
-	ours = protobuf_c_grpc2_conn_server_new(server, NULL);
+	ours = protobuf_c_grpc2_conn_server_new(server, r->sopts);
 
 #define NV(nm, val) do { \
 	nva[n].name = (const uint8_t *) (nm); nva[n].namelen = strlen(nm); \
@@ -224,6 +266,8 @@ raw_request(ProtobufCGrpc2Server *server, Raw *r)
 	NV(":scheme", "http");
 	NV(":path", r->path);
 	NV(":authority", "localhost");
+	if (r->timeout != NULL)
+		NV("grpc-timeout", r->timeout);
 	if (r->ctype != NULL)
 		NV("content-type", r->ctype);
 	NV("te", "trailers");
@@ -232,7 +276,17 @@ raw_request(ProtobufCGrpc2Server *server, Raw *r)
 	assert(nghttp2_conn_submit_request(raw, nva, n,
 					   r->bodylen ? &dr : NULL, NULL) >= 0);
 	pump_raw(raw, ours);
-	assert(r->closed);
+	if (r->wait_ms > 0) {
+		assert(!r->closed);		/* nothing has expired yet */
+		r->timeout_seen = protobuf_c_grpc2_conn_get_timeout_ns(ours);
+		usleep(r->wait_ms * 1000);
+		assert(protobuf_c_grpc2_conn_handle_expiry(ours) == 0);
+		pump_raw(raw, ours);
+	}
+	if (r->expect_open)
+		assert(!r->closed);
+	else
+		assert(r->closed);
 	nghttp2_conn_del(raw);
 	protobuf_c_grpc2_conn_free(ours);
 }
@@ -250,6 +304,70 @@ frame(uint8_t *out, uint8_t compressed, const uint8_t *payload, size_t n)
 	return 5 + n;
 }
 
+/* Hold never answers, so only a deadline can end the call. */
+static void
+hold_request(ProtobufCGrpc2Server *server, Raw *r, const char *timeout,
+	     const ProtobufCGrpc2ConnOptions *sopts, unsigned wait_ms,
+	     int expect_open)
+{
+	memset(r, 0, sizeof *r);
+	r->method = "POST";
+	r->path = "/loopback.Counter/Hold";
+	r->ctype = "application/grpc";
+	r->timeout = timeout;
+	r->sopts = sopts;
+	r->wait_ms = wait_ms;
+	r->expect_open = expect_open;
+	raw_request(server, r);
+}
+
+static void
+test_server_deadlines(ProtobufCGrpc2Server *server)
+{
+	Raw r;
+	ProtobufCGrpc2ConnOptions o;
+	int before = sinks_destroyed;
+	const char *bad[] = { "20x", "123456789m", "m", "", "-5m", "2 0m", "20mm" };
+	size_t i;
+
+	/* the header sets the deadline; the server answers DEADLINE_EXCEEDED */
+	hold_request(server, &r, "20m", NULL, 40, 0);
+	assert(r.status == 200 && r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
+	assert(r.timeout_seen >= 0 && r.timeout_seen <= 20 * 1000000);
+	assert(sinks_destroyed == before + 1);	/* released, once */
+
+	/* "0m" is a valid, already expired deadline */
+	hold_request(server, &r, "0m", NULL, 5, 0);
+	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
+
+	/* default deadline when the client sends none */
+	memset(&o, 0, sizeof o);
+	o.default_timeout_ms = 20;
+	hold_request(server, &r, NULL, &o, 40, 0);
+	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
+
+	/* ... but a client's own timeout wins over the default */
+	hold_request(server, &r, "100S", &o, 40, 1);
+	assert(r.grpc_status == -1);
+
+	/* the cap on what clients may ask for */
+	memset(&o, 0, sizeof o);
+	o.max_timeout_ms = 20;
+	hold_request(server, &r, "100S", &o, 40, 0);
+	assert(r.grpc_status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
+	/* the cap does not invent a deadline for calls that have none */
+	hold_request(server, &r, NULL, &o, 40, 1);
+	assert(r.grpc_status == -1);
+	puts("protocol: server deadlines ok");
+
+	/* malformed grpc-timeout values are ignored: no deadline at all */
+	for (i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+		hold_request(server, &r, bad[i], NULL, 40, 1);
+		assert(r.grpc_status == -1);
+	}
+	puts("protocol: malformed grpc-timeout ignored ok");
+}
+
 static void
 test_server_responses(void)
 {
@@ -262,6 +380,7 @@ test_server_responses(void)
 
 	loopback__counter__init(&impl, NULL);
 	impl.unary = impl_unary;
+	impl.hold = impl_hold;
 	assert(protobuf_c_grpc2_server_add_service(server, &impl.base) == 0);
 	memset(&r, 0, sizeof r);
 	req.n = 1;
@@ -342,12 +461,13 @@ test_server_responses(void)
 	assert(r.grpc_status == PROTOBUF_C_GRPC2_INTERNAL);
 	puts("protocol: bad message payloads ok");
 
+	test_server_deadlines(server);
 	protobuf_c_grpc2_server_free(server);
 }
 
 /* ---- part 2: our client -> raw server ---- */
 
-enum { M_HTTP_STATUS = 1, M_RST, M_OK_NO_STATUS };
+enum { M_HTTP_STATUS = 1, M_RST, M_OK_NO_STATUS, M_SILENT };
 
 static int srv_http_status;
 static uint32_t srv_rst_code;
@@ -358,7 +478,10 @@ fake_end_headers(nghttp2_conn *c, int64_t id, int fin, void *cud, void *sud)
 	Raw *r = cud;
 	(void) fin; (void) sud;
 
-	if (r->mode == M_RST) {
+	(void) id;
+	if (r->mode == M_SILENT) {
+		/* never answer */
+	} else if (r->mode == M_RST) {
 		nghttp2_conn_shutdown_stream(c, 0, id, srv_rst_code);
 	} else if (r->mode == M_HTTP_STATUS) {
 		char code[16];
@@ -378,6 +501,9 @@ fake_end_headers(nghttp2_conn *c, int64_t id, int fin, void *cud, void *sud)
 
 static int last_status;
 static char last_msg[128];
+static char seen_timeout_hdr[32];
+static int seen_reset;
+static uint32_t seen_reset_code;
 static int got_reply;
 
 static void
@@ -397,7 +523,8 @@ cb_rsp(const Loopback__Rsp *r, void *d)
 }
 
 static int
-client_sees(int mode, int http_status, uint32_t rst_code)
+client_sees_timeout(int mode, int http_status, uint32_t rst_code,
+		    uint64_t timeout_ms, unsigned wait_ms)
 {
 	nghttp2_conn *raw;
 	nghttp2_callbacks cb;
@@ -425,13 +552,61 @@ client_sees(int mode, int http_status, uint32_t rst_code)
 	last_status = -1;
 	last_msg[0] = 0;
 	got_reply = 0;
+	if (timeout_ms > 0)
+		assert(protobuf_c_grpc2_client_service_set_timeout_ms(svc, timeout_ms) == 0);
 	req.n = 1;
 	loopback__counter__unary(svc, &req, cb_rsp, NULL);
 	pump_raw(raw, ours);
+	if (wait_ms > 0) {
+		assert(last_status == -1);	/* still waiting */
+		usleep(wait_ms * 1000);
+		assert(protobuf_c_grpc2_conn_handle_expiry(ours) == 0);
+		pump_raw(raw, ours);		/* delivers the RST_STREAM */
+	}
+	snprintf(seen_timeout_hdr, sizeof seen_timeout_hdr, "%s", r.timeout_hdr);
+	seen_reset = r.reset;
+	seen_reset_code = r.reset_code;
 	assert(got_reply == 0);
 	nghttp2_conn_del(raw);
 	protobuf_c_grpc2_conn_free(ours);
 	return last_status;
+}
+
+static int
+client_sees(int mode, int http_status, uint32_t rst_code)
+{
+	return client_sees_timeout(mode, http_status, rst_code, 0, 0);
+}
+
+static void
+test_client_deadlines(void)
+{
+	/* no timeout: no grpc-timeout header */
+	client_sees(M_SILENT, 0, 0);
+	assert(seen_timeout_hdr[0] == 0);
+
+	/* the header carries the timeout, in a unit that fits 8 digits */
+	client_sees_timeout(M_SILENT, 0, 0, 1500, 0);
+	assert(strcmp(seen_timeout_hdr, "1500m") == 0);
+	client_sees_timeout(M_SILENT, 0, 0, 99999999, 0);
+	assert(strcmp(seen_timeout_hdr, "99999999m") == 0);
+	client_sees_timeout(M_SILENT, 0, 0, 100000000, 0);
+	assert(strcmp(seen_timeout_hdr, "100000S") == 0);
+	client_sees_timeout(M_SILENT, 0, 0, (uint64_t) 100000000 * 1000 + 1, 0);
+	assert(strcmp(seen_timeout_hdr, "1666667M") == 0);
+
+	/* no answer within the timeout: DEADLINE_EXCEEDED, the stream is
+	 * cancelled, and the application's callback ran */
+	assert(client_sees_timeout(M_SILENT, 0, 0, 20, 40) ==
+	       PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED);
+	assert(seen_reset && seen_reset_code == 8);	/* CANCEL */
+	assert(strcmp(seen_timeout_hdr, "20m") == 0);
+
+	/* a long deadline does not fire early: the call is only completed when
+	 * the connection goes away */
+	assert(client_sees_timeout(M_SILENT, 0, 0, 60000, 20) ==
+	       PROTOBUF_C_GRPC2_UNAVAILABLE);
+	puts("protocol: client deadlines ok");
 }
 
 static void
@@ -466,6 +641,7 @@ main(void)
 {
 	test_server_responses();
 	test_client_mapping();
+	test_client_deadlines();
 	puts("protocol: ok");
 	return 0;
 }

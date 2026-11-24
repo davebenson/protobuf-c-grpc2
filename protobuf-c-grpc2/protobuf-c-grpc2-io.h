@@ -91,11 +91,14 @@ struct ProtobufCGrpc2IoSystem {
 	void (*timer_free)(ProtobufCGrpc2IoSystem *io, void *timer);
 
 	/**
-	 * Arrange for `hook(data)` to be called once at the end of every
-	 * event loop iteration (after all I/O and timer callbacks), for as
-	 * long as it is registered. This is where the core sends the output
-	 * produced by callbacks and handlers. The hook must not by itself
-	 * keep the loop alive. Returns a handle, or NULL on failure.
+	 * Arrange for `hook(data)` to be called every time the event loop is
+	 * about to wait for events, after the callbacks (I/O and timers) of
+	 * the current iteration have run, for as long as it is registered.
+	 * This is where the core sends the output produced by callbacks and
+	 * handlers, so it must run even when the output came from a timer:
+	 * with libuv use a prepare handle, not a check handle, which would
+	 * only run after the next wakeup. The hook must not by itself keep the
+	 * loop alive. Returns a handle, or NULL on failure.
 	 */
 	void *(*add_iteration_hook)(ProtobufCGrpc2IoSystem *io,
 				    void (*hook)(void *), void *data);

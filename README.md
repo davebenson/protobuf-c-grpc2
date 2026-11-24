@@ -50,10 +50,30 @@ ALPN must negotiate `h2`.
 `use_uv` and `use_openssl` are shorthands for the generic
 `add_io_system()` and `add_secure_transport_system()`, which take the
 interfaces in `protobuf-c-grpc2-io.h`: a `ProtobufCGrpc2IoSystem` (TCP
-listen/streams, timers and an end-of-loop-iteration hook) and a
+listen/streams, timers and a hook that runs before the loop blocks) and a
 `ProtobufCGrpc2SecureTransportSystem` (a sans-I/O, BIO-style TLS session).
 Implement those to support another event loop or TLS library; the core never
 sees libuv or OpenSSL.
+
+## Timeouts
+
+A client sets a timeout per service handle (handles are cheap, so use one
+per timeout):
+
+    ProtobufCService *svc = protobuf_c_grpc2_conn_client_service(conn, &desc);
+    protobuf_c_grpc2_client_service_set_timeout_ms(svc, 2000);
+
+Calls made through it get a deadline, sent as `grpc-timeout`. A call past its
+deadline is cancelled and completes with `PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED`
+(see `on_call_done`). A server enforces the client's `grpc-timeout` too
+(`ProtobufCGrpc2ConnOptions` has `default_timeout_ms` for calls without one
+and `max_timeout_ms` as a cap); a malformed `grpc-timeout` is ignored. The
+handler is not yet told that its call timed out: it can keep running and its
+later responses are dropped.
+
+Deadlines are driven by the same timer as the HTTP/2 protocol timers
+(`protobuf_c_grpc2_conn_get_timeout_ns()` / `..._handle_expiry()`); the
+builder's pump does this for you.
 
 ## Without the builder (sans-I/O)
 

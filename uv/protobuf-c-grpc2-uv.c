@@ -30,7 +30,7 @@ typedef struct {
 } UvTimer;
 
 typedef struct {
-	uv_check_t check;		/* must be first */
+	uv_prepare_t prepare;		/* must be first */
 	void (*hook)(void *);
 	void *data;
 } UvHook;
@@ -231,8 +231,13 @@ uv_timer_free_(ProtobufCGrpc2IoSystem *io, void *timer)
 	uv_close(timer, free_handle);
 }
 
+/*
+ * A prepare handle runs after the timer callbacks of an iteration and before
+ * the loop blocks, so output produced by timers is flushed before waiting.
+ * (A check handle would run only after the next wakeup.)
+ */
 static void
-hook_fired(uv_check_t *c)
+hook_fired(uv_prepare_t *c)
 {
 	UvHook *h = (UvHook *) c;
 	h->hook(h->data);
@@ -246,9 +251,9 @@ uv_add_hook_(ProtobufCGrpc2IoSystem *io, void (*hook)(void *), void *data)
 		return NULL;
 	h->hook = hook;
 	h->data = data;
-	uv_check_init(((UvIo *) io)->loop, &h->check);
-	uv_check_start(&h->check, hook_fired);
-	uv_unref((uv_handle_t *) &h->check);	/* must not keep the loop alive */
+	uv_prepare_init(((UvIo *) io)->loop, &h->prepare);
+	uv_prepare_start(&h->prepare, hook_fired);
+	uv_unref((uv_handle_t *) &h->prepare);	/* must not keep the loop alive */
 	return h;
 }
 
@@ -257,8 +262,8 @@ uv_remove_hook_(ProtobufCGrpc2IoSystem *io, void *hook)
 {
 	UvHook *h = hook;
 	(void) io;
-	uv_check_stop(&h->check);
-	uv_close((uv_handle_t *) &h->check, free_handle);
+	uv_prepare_stop(&h->prepare);
+	uv_close((uv_handle_t *) &h->prepare, free_handle);
 }
 
 static void

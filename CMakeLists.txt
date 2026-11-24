@@ -134,6 +134,7 @@ if(BUILD_TESTS)
     ${CMAKE_CURRENT_BINARY_DIR}/t ${CMAKE_CURRENT_BINARY_DIR})
   target_link_libraries(test-protocol protobuf-c-grpc2)
   add_test(NAME protocol COMMAND test-protocol)
+  set_tests_properties(protocol PROPERTIES TIMEOUT 60)
 
   if(LIBUV_FOUND AND OPENSSL_FOUND)
     grpc2_protoc(examples greeter)
@@ -144,6 +145,7 @@ if(BUILD_TESTS)
     target_link_libraries(test-builder protobuf-c-grpc2-uv
       protobuf-c-grpc2-openssl)
     add_test(NAME builder COMMAND test-builder)
+    set_tests_properties(builder PROPERTIES TIMEOUT 60)
   endif()
 endif()
 
@@ -164,6 +166,7 @@ if(BUILD_EXAMPLES AND LIBUV_FOUND)
   add_test(NAME examples-smoke
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/examples/smoke-test.sh
             $<TARGET_FILE:libuv-server> $<TARGET_FILE:libuv-client>)
+  set_tests_properties(examples-smoke PROPERTIES TIMEOUT 60)
 elseif(BUILD_EXAMPLES)
   message(STATUS "libuv not found: not building the examples")
 endif()

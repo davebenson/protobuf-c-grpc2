@@ -33,6 +33,7 @@ struct ProtobufCGrpc2Conn {
 
 struct ClientService {
 	ProtobufCService base;		/* must be first */
+	uint64_t timeout_ms;		/* 0: calls have no deadline */
 	ProtobufCGrpc2Conn *conn;
 	ClientService *next;
 };
@@ -77,6 +78,9 @@ struct Call {
 	int in_msg;
 
 	/* flags */
+	uint64_t deadline_ns;		/* absolute (now_ns() clock); 0 = none */
+	int has_timeout;		/* server: a valid grpc-timeout was sent */
+	uint64_t timeout_ns;		/* server: its value */
 	int stream_gone;		/* nghttp2 stream closed */
 	int remote_ended;		/* peer finished sending */
 	int done;			/* final status determined */
@@ -214,6 +218,67 @@ pct_decode(const uint8_t *s, size_t n)
 	}
 	r[o] = 0;
 	return r;
+}
+
+/*
+ * grpc-timeout: 1 to 8 ASCII digits and a unit (H M S m u n). Returns 0 and
+ * the value in nanoseconds (saturated), or -1 if malformed.
+ */
+static int
+parse_grpc_timeout(const uint8_t *v, size_t len, uint64_t *ns)
+{
+	static const uint64_t HUGE_NS = (uint64_t) 1 << 62;
+	uint64_t n = 0, unit;
+	size_t i;
+
+	if (len < 2 || len > 9)
+		return -1;
+	for (i = 0; i + 1 < len; i++) {
+		if (v[i] < '0' || v[i] > '9')
+			return -1;
+		n = n * 10 + (uint64_t) (v[i] - '0');
+	}
+	switch (v[len - 1]) {
+	case 'H': unit = (uint64_t) 3600 * 1000000000u; break;
+	case 'M': unit = (uint64_t) 60 * 1000000000u; break;
+	case 'S': unit = 1000000000u; break;
+	case 'm': unit = 1000000u; break;
+	case 'u': unit = 1000u; break;
+	case 'n': unit = 1; break;
+	default: return -1;
+	}
+	*ns = (n > HUGE_NS / unit) ? HUGE_NS : n * unit;
+	return 0;
+}
+
+/* Encode a timeout in ms as a grpc-timeout value (at most 8 digits). */
+static void
+format_grpc_timeout(uint64_t ms, char out[16])
+{
+	const uint64_t MAXV = 99999999u;
+
+	if (ms <= MAXV) {
+		snprintf(out, 16, "%um", (unsigned) ms);
+		return;
+	}
+	ms = (ms + 999) / 1000;			/* seconds, rounded up */
+	if (ms <= MAXV) {
+		snprintf(out, 16, "%uS", (unsigned) ms);
+		return;
+	}
+	ms = (ms + 59) / 60;
+	if (ms <= MAXV) {
+		snprintf(out, 16, "%uM", (unsigned) ms);
+		return;
+	}
+	ms = (ms + 59) / 60;
+	snprintf(out, 16, "%uH", (unsigned) (ms > MAXV ? MAXV : ms));
+}
+
+static uint64_t
+add_sat(uint64_t a, uint64_t b)
+{
+	return (a + b < a) ? UINT64_MAX : a + b;
 }
 
 static nghttp2_nv
@@ -656,6 +721,29 @@ server_on_remote_end(Call *c)
 	}
 }
 
+/* The deadline is the client's grpc-timeout (capped by max_timeout_ms), or
+ * the default if it sent none. */
+static void
+server_arm_deadline(Call *c)
+{
+	const ProtobufCGrpc2ConnOptions *o = &c->conn->options;
+	uint64_t timeout_ns;
+
+	if (c->has_timeout) {
+		timeout_ns = c->timeout_ns;
+		if (o->max_timeout_ms > 0 &&
+		    timeout_ns > o->max_timeout_ms * 1000000u)
+			timeout_ns = o->max_timeout_ms * 1000000u;
+	} else if (o->default_timeout_ms > 0) {
+		timeout_ns = o->default_timeout_ms * 1000000u;
+	} else {
+		return;
+	}
+	c->deadline_ns = add_sat(now_ns(), timeout_ns);
+	if (c->deadline_ns == 0)
+		c->deadline_ns = 1;
+}
+
 /* Request headers are complete: validate and look up the method. */
 static void
 server_on_headers_end(Call *c, int fin)
@@ -665,6 +753,7 @@ server_on_headers_end(Call *c, int fin)
 	const char *slash;
 	size_t i, j;
 
+	server_arm_deadline(c);
 	if (!c->saw_content_type && c->http_error == 0)
 		c->http_error = 415;
 	if (c->http_error != 0) {
@@ -851,7 +940,9 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	const ProtobufCMethodDescriptor *m;
 	Call *c;
 	ClientSink *sink = NULL;
-	nghttp2_nv nva[7];
+	nghttp2_nv nva[8];
+	size_t nnv = 0;
+	char timeout_hdr[16];
 	nghttp2_data_reader dr;
 	char *path;
 	size_t plen;
@@ -895,15 +986,21 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	if (!(flags & PROTOBUF_C_INPUT_STREAMING))
 		c->out_finished = 1;
 
-	nva[0] = nv_lit(":method", "POST");
-	nva[1] = nv_lit(":scheme", conn->scheme);
-	nva[2] = nv_lit(":path", path);
-	nva[3] = nv_lit(":authority", conn->authority);
-	nva[4] = nv_lit("content-type", "application/grpc");
-	nva[5] = nv_lit("te", "trailers");
-	nva[6] = nv_lit("user-agent", "protobuf-c-grpc2");
+	nva[nnv++] = nv_lit(":method", "POST");
+	nva[nnv++] = nv_lit(":scheme", conn->scheme);
+	nva[nnv++] = nv_lit(":path", path);
+	nva[nnv++] = nv_lit(":authority", conn->authority);
+	if (cs->timeout_ms > 0) {
+		/* the spec wants grpc-timeout right after the pseudo-headers */
+		format_grpc_timeout(cs->timeout_ms, timeout_hdr);
+		nva[nnv++] = nv_lit("grpc-timeout", timeout_hdr);
+		c->deadline_ns = add_sat(now_ns(), cs->timeout_ms * 1000000u);
+	}
+	nva[nnv++] = nv_lit("content-type", "application/grpc");
+	nva[nnv++] = nv_lit("te", "trailers");
+	nva[nnv++] = nv_lit("user-agent", "protobuf-c-grpc2");
 	dr.read_data = read_data_cb;
-	sid = nghttp2_conn_submit_request(conn->ng, nva, 7, &dr, c);
+	sid = nghttp2_conn_submit_request(conn->ng, nva, nnv, &dr, c);
 	free(path);
 	if (sid < 0) {
 		c->stream_gone = 1;
@@ -945,12 +1042,23 @@ protobuf_c_grpc2_conn_client_service(ProtobufCGrpc2Conn *conn,
 	if (cs == NULL)
 		return NULL;
 	cs->base.descriptor = descriptor;
+	cs->timeout_ms = conn->options.default_timeout_ms;
 	cs->base.invoke = client_invoke;
 	cs->base.destroy = client_service_destroy;
 	cs->conn = conn;
 	cs->next = conn->client_services;
 	conn->client_services = cs;
 	return &cs->base;
+}
+
+int
+protobuf_c_grpc2_client_service_set_timeout_ms(ProtobufCService *service,
+					       uint64_t timeout_ms)
+{
+	if (service == NULL || service->invoke != client_invoke)
+		return -1;
+	((ClientService *) service)->timeout_ms = timeout_ms;
+	return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -992,6 +1100,10 @@ recv_header_cb(nghttp2_conn *ng, int64_t stream_id, int32_t token,
 			if (!(v.len == 4 && memcmp(v.base, "POST", 4) == 0) &&
 			    c->http_error == 0)
 				c->http_error = 405;
+		} else if (n.len == 12 && memcmp(n.base, "grpc-timeout", 12) == 0) {
+			/* a malformed value is ignored (no deadline) */
+			c->has_timeout =
+				parse_grpc_timeout(v.base, v.len, &c->timeout_ns) == 0;
 		} else if (n.len == 12 && memcmp(n.base, "content-type", 12) == 0) {
 			c->saw_content_type = 1;
 			if (!(v.len >= 16 &&
@@ -1269,18 +1381,29 @@ protobuf_c_grpc2_conn_write(ProtobufCGrpc2Conn *conn, uint8_t *buf, size_t len)
 	return nghttp2_conn_write(conn->ng, buf, len, now_ns());
 }
 
-uint64_t
-protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn)
+/* Earliest call deadline, or 0 if no live call has one. */
+static uint64_t
+earliest_deadline(const ProtobufCGrpc2Conn *conn)
 {
-	return nghttp2_conn_get_expiry(conn->ng);
+	const Call *c;
+	uint64_t best = 0;
+
+	for (c = conn->calls; c != NULL; c = c->next)
+		if (!c->done && c->deadline_ns != 0 &&
+		    (best == 0 || c->deadline_ns < best))
+			best = c->deadline_ns;
+	return best;
 }
 
 int64_t
 protobuf_c_grpc2_conn_get_timeout_ns(const ProtobufCGrpc2Conn *conn)
 {
 	nghttp2_tstamp expiry = nghttp2_conn_get_expiry(conn->ng);
+	uint64_t dl = earliest_deadline(conn);
 	nghttp2_tstamp now;
 
+	if (dl != 0 && dl < expiry)
+		expiry = dl;
 	if (expiry == UINT64_MAX)
 		return -1;
 	now = now_ns();
@@ -1290,10 +1413,50 @@ protobuf_c_grpc2_conn_get_timeout_ns(const ProtobufCGrpc2Conn *conn)
 		? INT64_MAX : (int64_t) (expiry - now);
 }
 
+uint64_t
+protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn)
+{
+	int64_t t = protobuf_c_grpc2_conn_get_timeout_ns(conn);
+	return t < 0 ? UINT64_MAX : add_sat(now_ns(), (uint64_t) t);
+}
+
+static Call *
+find_expired_call(const ProtobufCGrpc2Conn *conn, uint64_t now)
+{
+	Call *c;
+
+	for (c = conn->calls; c != NULL; c = c->next)
+		if (!c->done && c->deadline_ns != 0 && c->deadline_ns <= now)
+			return c;
+	return NULL;
+}
+
 int
 protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn)
 {
-	return nghttp2_conn_handle_expiry(conn->ng, now_ns());
+	uint64_t now = now_ns();
+	int rv = nghttp2_conn_handle_expiry(conn->ng, now);
+	Call *c;
+
+	/* Fire expired deadlines one at a time: the callbacks they cause may
+	 * change the list of calls. */
+	while ((c = find_expired_call(conn, now)) != NULL) {
+		c->deadline_ns = 0;
+		if (c->is_server) {
+			server_finish(c, PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED,
+				      "deadline exceeded");
+		} else {
+			/* cancel the stream, then tell the application */
+			if (!c->stream_gone)
+				nghttp2_conn_shutdown_stream(conn->ng, 0,
+							     c->stream_id,
+							     HTTP2_CANCEL);
+			c->out_finished = 1;
+			client_complete(c, PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED,
+					"deadline exceeded");
+		}
+	}
+	return rv;
 }
 
 /* ------------------------------------------------------------------ */

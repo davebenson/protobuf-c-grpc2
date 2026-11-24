@@ -5,8 +5,8 @@
  * to drive the sans-I/O grpc2 API from an event loop:
  *
  *   - bytes read from the socket go to protobuf_c_grpc2_conn_read();
- *   - after every loop iteration (a uv_check handle) each connection is
- *     "flushed": protobuf_c_grpc2_conn_write() is called until it returns 0 and the
+ *   - before the loop blocks (a uv_prepare handle, which runs after the
+ *     timers of the iteration) each connection is "flushed": protobuf_c_grpc2_conn_write() is called until it returns 0 and the
  *     bytes are written to the socket. Doing it here, rather than after each
  *     callback, picks up output produced from timers and other callbacks;
  *   - the library's timer (SETTINGS ack timeout) is mapped to a uv_timer.
@@ -37,7 +37,7 @@ struct UvConn {
 };
 
 static UvConn *uvconn_list;
-static uv_check_t uvconn_check;
+static uv_prepare_t uvconn_prepare;
 
 static void uvconn_close(UvConn *c);
 static void uvconn_timer_cb(uv_timer_t *t);
@@ -90,7 +90,7 @@ uvconn_flush(UvConn *c)
 }
 
 static void
-uvconn_check_cb(uv_check_t *h)
+uvconn_prepare_cb(uv_prepare_t *h)
 {
 	UvConn *c;
 	(void) h;
@@ -167,9 +167,9 @@ uvconn_close(UvConn *c)
 static void
 uvconn_loop_init(uv_loop_t *loop)
 {
-	uv_check_init(loop, &uvconn_check);
-	uv_check_start(&uvconn_check, uvconn_check_cb);
-	uv_unref((uv_handle_t *) &uvconn_check);
+	uv_prepare_init(loop, &uvconn_prepare);
+	uv_prepare_start(&uvconn_prepare, uvconn_prepare_cb);
+	uv_unref((uv_handle_t *) &uvconn_prepare);
 }
 
 /* Wrap `conn` (takes ownership). The caller then accepts or connects
