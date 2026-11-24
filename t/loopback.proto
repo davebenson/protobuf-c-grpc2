@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package loopback;
+
+message Req { int32 n = 1; string text = 2; }
+message Rsp { int32 n = 1; string text = 2; }
+
+service Counter {
+  rpc Unary(Req) returns (Rsp);
+  rpc Down(Req) returns (stream Rsp);
+  rpc Up(stream Req) returns (Rsp);
+  rpc Both(stream Req) returns (stream Rsp);
+  rpc Fail(Req) returns (Rsp);
+  rpc Hold(stream Req) returns (stream Rsp);
+  rpc Reject(stream Req) returns (Rsp);
+}
