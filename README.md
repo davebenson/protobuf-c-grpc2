@@ -3,9 +3,22 @@
 gRPC over HTTP/2 for protobuf-c, built on [nghttp2 version 2][ng2]
 (`libnghttp2v2`).
 
-This directory is a **separate package**. It has its own `configure.ac` and
-`CMakeLists.txt` and builds against an *installed* `libprotobuf-c` and
-`libnghttp2v2`, so protobuf-c itself has no dependency on nghttp2.
+Servers and clients are assembled with builders from pluggable event-loop
+and TLS components, so the core has no dependency on any particular event
+loop or TLS library. Unary calls and all three streaming modes are
+supported.
+
+## Requirements
+
+* **protobuf-c with streaming support** (the `ProtobufCService::invoke`
+  streaming extensions and `protoc-gen-c` method flags). This is not yet in
+  a protobuf-c release; it is on the `streaming-api` branch of
+  <https://github.com/davebenson/protobuf-c>.
+* **nghttp2 version 2** (`libnghttp2v2`, pkg-config `libnghttp2v2`).
+* Optionally libuv and OpenSSL, for the adapters below.
+
+The libraries build against *installed* copies of these, so this package can
+be released and packaged separately from protobuf-c itself.
 
 It builds three libraries, each with its own pkg-config file and headers, so
 distributions can split it into separate packages:
@@ -21,7 +34,6 @@ distributions can split it into separate packages:
 
 ## Building
 
-    cd grpc2
     autoreconf -i && ./configure && make && make check
     # or
     cmake -S . -B build && cmake --build build && ctest --test-dir build
@@ -148,3 +160,7 @@ balancing or name-resolution policies, and uses a single connection. Nothing
 is thread safe.
 
 [ng2]: https://github.com/nghttp2/nghttp2
+
+## License
+
+BSD 2-clause, the same as protobuf-c; see `LICENSE`.
