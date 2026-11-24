@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package example;
+
+message HelloRequest {
+  string name = 1;
+  int32 count = 2;      // for SayHelloMany: how many greetings
+}
+
+message HelloReply {
+  string message = 1;
+}
+
+service Greeter {
+  // One request, one reply.
+  rpc SayHello(HelloRequest) returns (HelloReply);
+  // One request, a stream of replies (one every 200ms, from a timer).
+  rpc SayHelloMany(HelloRequest) returns (stream HelloReply);
+  // A stream of requests, one reply greeting everybody.
+  rpc Collect(stream HelloRequest) returns (HelloReply);
+}

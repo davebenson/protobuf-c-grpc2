@@ -145,7 +145,7 @@ impl_reject(Loopback__Counter_Service *s, const Loopback__Req *in,
 /* ---- pump ---- */
 
 static void
-pump(Grpc2Conn *a, Grpc2Conn *b)
+pump(ProtobufCGrpc2Conn *a, ProtobufCGrpc2Conn *b)
 {
 	uint8_t buf[16384];
 	int moved;
@@ -154,14 +154,14 @@ pump(Grpc2Conn *a, Grpc2Conn *b)
 	do {
 		ssize_t n;
 		moved = 0;
-		while ((n = grpc2_conn_write(a, buf, sizeof buf)) > 0) {
-			int rv = grpc2_conn_read(b, buf, (size_t) n);
+		while ((n = protobuf_c_grpc2_conn_write(a, buf, sizeof buf)) > 0) {
+			int rv = protobuf_c_grpc2_conn_read(b, buf, (size_t) n);
 			assert(rv == 0);
 			moved = 1;
 		}
 		assert(n == 0);
-		while ((n = grpc2_conn_write(b, buf, sizeof buf)) > 0) {
-			int rv = grpc2_conn_read(a, buf, (size_t) n);
+		while ((n = protobuf_c_grpc2_conn_write(b, buf, sizeof buf)) > 0) {
+			int rv = protobuf_c_grpc2_conn_read(a, buf, (size_t) n);
 			assert(rv == 0);
 			moved = 1;
 		}
@@ -222,19 +222,19 @@ on_done(const ProtobufCMethodDescriptor *m, int status, const char *message,
 /* ---- teardown and cancellation ---- */
 
 static void
-new_pair(Grpc2Server *server, const Grpc2ConnOptions *copts,
-	 const Grpc2ConnOptions *sopts, Grpc2Conn **cc, Grpc2Conn **sc,
+new_pair(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnOptions *copts,
+	 const ProtobufCGrpc2ConnOptions *sopts, ProtobufCGrpc2Conn **cc, ProtobufCGrpc2Conn **sc,
 	 ProtobufCService **client)
 {
-	*sc = grpc2_conn_server_new(server, sopts);
-	*cc = grpc2_conn_client_new(copts);
+	*sc = protobuf_c_grpc2_conn_server_new(server, sopts);
+	*cc = protobuf_c_grpc2_conn_client_new(copts);
 	assert(*sc != NULL && *cc != NULL);
-	*client = grpc2_conn_client_service(*cc, &loopback__counter__descriptor);
+	*client = protobuf_c_grpc2_conn_client_service(*cc, &loopback__counter__descriptor);
 	assert(*client != NULL);
 }
 
 static void
-check_still_works(Grpc2Conn *cc, Grpc2Conn *sc, ProtobufCService *client)
+check_still_works(ProtobufCGrpc2Conn *cc, ProtobufCGrpc2Conn *sc, ProtobufCService *client)
 {
 	Loopback__Req req = LOOPBACK__REQ__INIT;
 
@@ -242,15 +242,15 @@ check_still_works(Grpc2Conn *cc, Grpc2Conn *sc, ProtobufCService *client)
 	req.n = 1;
 	loopback__counter__unary(client, &req, on_rsp, NULL);
 	pump(cc, sc);
-	assert(rsp_count == 1 && rsp_n[0] == 2 && last_status == GRPC2_OK);
+	assert(rsp_count == 1 && rsp_n[0] == 2 && last_status == PROTOBUF_C_GRPC2_OK);
 }
 
 static void
-test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
-			 const Grpc2ConnOptions *sopts, Grpc2Conn *cc,
-			 Grpc2Conn *sc, ProtobufCService *client)
+test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnOptions *copts,
+			 const ProtobufCGrpc2ConnOptions *sopts, ProtobufCGrpc2Conn *cc,
+			 ProtobufCGrpc2Conn *sc, ProtobufCService *client)
 {
-	Grpc2Conn *cc2, *sc2;
+	ProtobufCGrpc2Conn *cc2, *sc2;
 	ProtobufCService *client2;
 	Loopback__Req req = LOOPBACK__REQ__INIT;
 	ProtobufCInputStream *in;
@@ -262,9 +262,9 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	reset();
 	req.n = 1;
 	loopback__counter__unary(client2, &req, on_rsp, NULL);
-	grpc2_conn_free(cc2);
-	assert(rsp_count == 0 && rsp_end == 1 && last_status == GRPC2_UNAVAILABLE);
-	grpc2_conn_free(sc2);
+	protobuf_c_grpc2_conn_free(cc2);
+	assert(rsp_count == 0 && rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
+	protobuf_c_grpc2_conn_free(sc2);
 	puts("teardown: client freed, unary in flight ok");
 
 	/* 2. client freed while the application still holds an input stream */
@@ -274,13 +274,13 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	req.n = 5;
 	assert(in->vtable->send_input(in, &req.base));
 	pump(cc2, sc2);
-	grpc2_conn_free(cc2);
-	assert(rsp_end == 1 && last_status == GRPC2_UNAVAILABLE);
+	protobuf_c_grpc2_conn_free(cc2);
+	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
 	assert(!in->vtable->send_input(in, &req.base));	/* conn is gone */
 	assert(!in->vtable->send_input(in, NULL));
 	in->vtable->destroy(in);			/* must be safe */
 	destroyed_before = server_streams_destroyed;
-	grpc2_conn_free(sc2);	/* destroys the server's input stream */
+	protobuf_c_grpc2_conn_free(sc2);	/* destroys the server's input stream */
 	assert(server_streams_destroyed == destroyed_before + 1);
 	puts("teardown: client freed, input stream held ok");
 
@@ -293,13 +293,13 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	in->vtable->send_input(in, &req.base);
 	pump(cc2, sc2);
 	assert(rsp_count == 1);
-	grpc2_conn_free(sc2);
+	protobuf_c_grpc2_conn_free(sc2);
 	assert(server_streams_destroyed == destroyed_before + 1);
-	assert(server_done_count == 0 || server_status != GRPC2_OK);
+	assert(server_done_count == 0 || server_status != PROTOBUF_C_GRPC2_OK);
 	/* the client notices when it next talks to the dead server; here we
 	 * just free it, which completes the call */
-	grpc2_conn_free(cc2);
-	assert(rsp_end == 1 && last_status == GRPC2_UNAVAILABLE);
+	protobuf_c_grpc2_conn_free(cc2);
+	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
 	in->vtable->destroy(in);
 	puts("teardown: server freed, bidi in flight ok");
 
@@ -313,9 +313,9 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	assert(rsp_count == 1 && rsp_n[0] == 30);
 	in->vtable->destroy(in);			/* not ended: cancels */
 	pump(cc, sc);
-	assert(rsp_end == 1 && last_status == GRPC2_CANCELLED);
+	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_CANCELLED);
 	assert(server_streams_destroyed == destroyed_before + 1);
-	assert(server_done_count == 1 && server_status == GRPC2_CANCELLED);
+	assert(server_done_count == 1 && server_status == PROTOBUF_C_GRPC2_CANCELLED);
 	check_still_works(cc, sc, client);
 	puts("cancel: client destroys unfinished stream ok");
 
@@ -327,7 +327,7 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	assert(held_closure != NULL);
 	in->vtable->destroy(in);
 	pump(cc, sc);
-	assert(rsp_end == 1 && last_status == GRPC2_CANCELLED);
+	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_CANCELLED);
 	late.n = 99;
 	held_closure(&late.base, held_closure_data);	/* ignored */
 	held_closure(NULL, held_closure_data);		/* ignored, releases */
@@ -341,7 +341,7 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	destroyed_before = server_streams_destroyed;
 	in = loopback__counter__reject(client, NULL, on_rsp, NULL);
 	pump(cc, sc);
-	assert(rsp_end == 1 && rsp_count == 0 && last_status == GRPC2_UNKNOWN);
+	assert(rsp_end == 1 && rsp_count == 0 && last_status == PROTOBUF_C_GRPC2_UNKNOWN);
 	req.n = 1;
 	in->vtable->send_input(in, &req.base);	/* may or may not be accepted */
 	pump(cc, sc);
@@ -360,11 +360,11 @@ test_teardown_and_cancel(Grpc2Server *server, const Grpc2ConnOptions *copts,
 	in = loopback__counter__hold(client2, NULL, on_rsp, NULL);
 	pump(cc2, sc2);
 	assert(held_closure != NULL);
-	grpc2_conn_free(sc2);
+	protobuf_c_grpc2_conn_free(sc2);
 	late.n = 5;
 	held_closure(&late.base, held_closure_data);	/* ignored */
 	held_closure(NULL, held_closure_data);		/* final: releases */
-	grpc2_conn_free(cc2);
+	protobuf_c_grpc2_conn_free(cc2);
 	in->vtable->destroy(in);
 	puts("teardown: stale closure after server freed ok");
 
@@ -382,10 +382,10 @@ int
 main(void)
 {
 	Loopback__Counter_Service impl = LOOPBACK__COUNTER__INIT(impl_);
-	Grpc2Server *server = grpc2_server_new();
-	Grpc2ConnOptions copts;
-	Grpc2ConnOptions sopts;
-	Grpc2Conn *cc, *sc;
+	ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new();
+	ProtobufCGrpc2ConnOptions copts;
+	ProtobufCGrpc2ConnOptions sopts;
+	ProtobufCGrpc2Conn *cc, *sc;
 	ProtobufCService *client;
 	Loopback__Req req = LOOPBACK__REQ__INIT;
 	ProtobufCInputStream *in;
@@ -396,13 +396,13 @@ main(void)
 	copts.on_call_done = on_done;
 	sopts.on_call_done = on_server_done;
 	assert(server != NULL);
-	assert(grpc2_server_add_service(server, &impl.base) == 0);
-	assert(grpc2_server_add_service(server, &impl.base) == -1);
+	assert(protobuf_c_grpc2_server_add_service(server, &impl.base) == 0);
+	assert(protobuf_c_grpc2_server_add_service(server, &impl.base) == -1);
 
-	sc = grpc2_conn_server_new(server, &sopts);
-	cc = grpc2_conn_client_new(&copts);
+	sc = protobuf_c_grpc2_conn_server_new(server, &sopts);
+	cc = protobuf_c_grpc2_conn_client_new(&copts);
 	assert(sc != NULL && cc != NULL);
-	client = grpc2_conn_client_service(cc, &loopback__counter__descriptor);
+	client = protobuf_c_grpc2_conn_client_service(cc, &loopback__counter__descriptor);
 	assert(client != NULL);
 
 	/* unary */
@@ -412,7 +412,7 @@ main(void)
 	loopback__counter__unary(client, &req, on_rsp, NULL);
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 42 && rsp_end == 0);
-	assert(last_status == GRPC2_OK);
+	assert(last_status == PROTOBUF_C_GRPC2_OK);
 	puts("unary ok");
 
 	/* server streaming */
@@ -423,7 +423,7 @@ main(void)
 	assert(rsp_count == 5 && rsp_end == 1);
 	for (i = 0; i < 5; i++)
 		assert(rsp_n[i] == 5 - i);
-	assert(last_status == GRPC2_OK);
+	assert(last_status == PROTOBUF_C_GRPC2_OK);
 	puts("server streaming ok");
 
 	/* client streaming; no first message */
@@ -439,7 +439,7 @@ main(void)
 	assert(in->vtable->send_input(in, NULL));
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 6);
-	assert(last_status == GRPC2_OK);
+	assert(last_status == PROTOBUF_C_GRPC2_OK);
 	in->vtable->destroy(in);
 	puts("client streaming ok");
 
@@ -468,7 +468,7 @@ main(void)
 	assert(rsp_count == 2 && rsp_n[1] == 20 && rsp_end == 0);
 	in->vtable->send_input(in, NULL);
 	pump(cc, sc);
-	assert(rsp_end == 1 && last_status == GRPC2_OK);
+	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_OK);
 	in->vtable->destroy(in);
 	puts("bidirectional ok");
 
@@ -477,7 +477,7 @@ main(void)
 	loopback__counter__fail(client, &req, on_rsp, NULL);
 	pump(cc, sc);
 	assert(rsp_count == 0 && rsp_end == 1);
-	assert(last_status == GRPC2_UNKNOWN);
+	assert(last_status == PROTOBUF_C_GRPC2_UNKNOWN);
 	puts("failure ok");
 
 	/* big message (multiple DATA frames and flow control) */
@@ -491,7 +491,7 @@ main(void)
 		req.text = text;
 		loopback__counter__unary(client, &req, on_rsp, NULL);
 		pump(cc, sc);
-		assert(rsp_count == 1 && rsp_n[0] == 8 && last_status == GRPC2_OK);
+		assert(rsp_count == 1 && rsp_n[0] == 8 && last_status == PROTOBUF_C_GRPC2_OK);
 		free(text);
 		req.text = NULL;
 	}
@@ -501,9 +501,9 @@ main(void)
 
 	test_teardown_and_cancel(server, &copts, &sopts, cc, sc, client);
 
-	grpc2_conn_free(cc);
-	grpc2_conn_free(sc);
-	grpc2_server_free(server);
+	protobuf_c_grpc2_conn_free(cc);
+	protobuf_c_grpc2_conn_free(sc);
+	protobuf_c_grpc2_server_free(server);
 	puts("loopback: ok");
 	return 0;
 }

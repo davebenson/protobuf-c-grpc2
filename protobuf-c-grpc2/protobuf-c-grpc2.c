@@ -10,7 +10,7 @@
 
 #include <nghttp2v2/nghttp2.h>
 
-#include "protobuf-c-grpc2.h"
+#include "protobuf-c-grpc2-internal.h"
 
 #define DEFAULT_MAX_MESSAGE_SIZE ((size_t) 4 * 1024 * 1024)
 #define FRAME_HEADER_LEN 5
@@ -19,16 +19,11 @@
 typedef struct Call Call;
 typedef struct ClientService ClientService;
 
-struct Grpc2Server {
-	ProtobufCService **services;
-	size_t n_services;
-};
-
-struct Grpc2Conn {
+struct ProtobufCGrpc2Conn {
 	nghttp2_conn *ng;
 	int is_server;
-	Grpc2Server *server;
-	Grpc2ConnOptions options;
+	ProtobufCGrpc2Server *server;
+	ProtobufCGrpc2ConnOptions options;
 	char *authority;
 	char *scheme;
 	size_t max_message_size;
@@ -38,7 +33,7 @@ struct Grpc2Conn {
 
 struct ClientService {
 	ProtobufCService base;		/* must be first */
-	Grpc2Conn *conn;
+	ProtobufCGrpc2Conn *conn;
 	ClientService *next;
 };
 
@@ -55,7 +50,7 @@ typedef struct {
  * chance to call it.
  */
 struct Call {
-	Grpc2Conn *conn;		/* NULL once the connection is gone */
+	ProtobufCGrpc2Conn *conn;		/* NULL once the connection is gone */
 	Call *prev, *next;
 	int refs;
 	int is_server;
@@ -88,10 +83,13 @@ struct Call {
 
 	/* server side */
 	char *path;
-	int http_ok;			/* request looked like gRPC */
+	int http_error;			/* HTTP status to reject the request with */
+	int saw_content_type;
+	int replied;			/* response headers have been submitted */
 	int headers_done;		/* request headers processed */
 	int dispatched;
 	int got_request;
+	ProtobufCMessage *request;	/* held until the request half-closes */
 	int closure_ref;		/* holds a reference for the closure */
 	ProtobufCInputStream *sink;	/* input stream from the handler */
 
@@ -116,7 +114,7 @@ static const char *const status_names[] = {
 };
 
 const char *
-grpc2_status_name(int status)
+protobuf_c_grpc2_status_name(int status)
 {
 	if (status < 0 || (size_t) status >= sizeof(status_names) / sizeof(status_names[0]))
 		return "UNKNOWN";
@@ -234,7 +232,7 @@ nv_lit(const char *name, const char *value)
 /* call lifetime */
 
 static Call *
-call_new(Grpc2Conn *conn, int is_server)
+call_new(ProtobufCGrpc2Conn *conn, int is_server)
 {
 	Call *c = calloc(1, sizeof(*c));
 	if (c == NULL)
@@ -277,6 +275,8 @@ call_unref(Call *c)
 	free(c->msg);
 	free(c->path);
 	free(c->grpc_message);
+	if (c->request != NULL)
+		protobuf_c_message_free_unpacked(c->request, NULL);
 	free(c);
 }
 
@@ -406,18 +406,18 @@ call_feed(Call *c, const uint8_t *data, size_t len, MessageFn fn)
 				break;
 			c->fhdr_got = 0;
 			if (c->fhdr[0] != 0)
-				return GRPC2_UNIMPLEMENTED; /* compression */
+				return PROTOBUF_C_GRPC2_UNIMPLEMENTED; /* compression */
 			c->msg_len = ((size_t) c->fhdr[1] << 24) |
 				     ((size_t) c->fhdr[2] << 16) |
 				     ((size_t) c->fhdr[3] << 8) | c->fhdr[4];
 			if (c->msg_len > c->conn->max_message_size)
-				return GRPC2_RESOURCE_EXHAUSTED;
+				return PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED;
 			c->msg_got = 0;
 			c->in_msg = 1;
 			free(c->msg);
 			c->msg = malloc(c->msg_len ? c->msg_len : 1);
 			if (c->msg == NULL)
-				return GRPC2_RESOURCE_EXHAUSTED;
+				return PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED;
 		}
 		{
 			size_t n = c->msg_len - c->msg_got;
@@ -456,6 +456,7 @@ server_reply_headers(Call *c)
 	nva[1] = nv_lit("content-type", "application/grpc");
 	dr.read_data = read_data_cb;
 	nghttp2_conn_submit_response(c->conn->ng, c->stream_id, nva, 2, &dr);
+	c->replied = 1;
 }
 
 static void
@@ -475,10 +476,32 @@ server_release_closure(Call *c)
 	}
 }
 
+/* Reject a request that is not gRPC at all with a plain HTTP status. */
+static void
+server_http_error(Call *c, int http_status)
+{
+	nghttp2_nv nva[1];
+	char code[16];
+	char text[32];
+
+	if (c->done || c->conn == NULL)
+		return;
+	c->done = 1;
+	snprintf(code, sizeof code, "%d", http_status);
+	nva[0] = nv_lit(":status", code);
+	snprintf(text, sizeof text, "HTTP %d", http_status);
+	call_report_done(c, PROTOBUF_C_GRPC2_UNKNOWN, text);
+	c->replied = 1;
+	c->out_finished = 1;
+	if (!c->stream_gone)
+		nghttp2_conn_submit_response(c->conn->ng, c->stream_id, nva, 1,
+					     NULL);
+}
+
 static void
 server_finish(Call *c, int status, const char *message)
 {
-	nghttp2_nv nva[2];
+	nghttp2_nv nva[4];
 	char code[16];
 	char *enc = NULL;
 	size_t n = 1;
@@ -495,7 +518,29 @@ server_finish(Call *c, int status, const char *message)
 		return;
 
 	snprintf(code, sizeof code, "%d", status);
+	if (!c->replied) {
+		/* Trailers-Only: status and trailers in the one HEADERS frame
+		 * that also ends the stream (for errors found before any
+		 * response was started). */
+		nva[0] = nv_lit(":status", "200");
+		nva[1] = nv_lit("content-type", "application/grpc");
+		nva[2] = nv_lit("grpc-status", code);
+		n = 3;
+		if (message != NULL && message[0] != 0 &&
+		    (enc = pct_encode(message)) != NULL) {
+			nva[3] = nv_lit("grpc-message", enc);
+			n = 4;
+		}
+		call_report_done(c, status, message);
+		c->replied = 1;
+		nghttp2_conn_submit_response(c->conn->ng, c->stream_id, nva, n,
+					     NULL);
+		free(enc);
+		c->out_finished = 1;
+		return;
+	}
 	nva[0] = nv_lit("grpc-status", code);
+	n = 1;
 	if (message != NULL && message[0] != 0) {
 		enc = pct_encode(message);
 		if (enc != NULL) {
@@ -518,21 +563,21 @@ server_closure(const ProtobufCMessage *msg, void *data)
 	if (msg == NULL) {
 		/* End of an output stream; for unary this signals failure. */
 		if (c->stream_flags & PROTOBUF_C_OUTPUT_STREAMING)
-			server_finish(c, GRPC2_OK, NULL);
+			server_finish(c, PROTOBUF_C_GRPC2_OK, NULL);
 		else
-			server_finish(c, GRPC2_UNKNOWN, "method failed");
+			server_finish(c, PROTOBUF_C_GRPC2_UNKNOWN, "method failed");
 		server_release_closure(c);
 		return;
 	}
 	if (c->done || c->stream_gone || c->conn == NULL)
 		return;
 	if (call_queue_message(c, msg) != 0) {
-		server_finish(c, GRPC2_INTERNAL, "cannot send response");
+		server_finish(c, PROTOBUF_C_GRPC2_INTERNAL, "cannot send response");
 		server_release_closure(c);
 		return;
 	}
 	if (!(c->stream_flags & PROTOBUF_C_OUTPUT_STREAMING)) {
-		server_finish(c, GRPC2_OK, NULL);
+		server_finish(c, PROTOBUF_C_GRPC2_OK, NULL);
 		server_release_closure(c);
 	}
 }
@@ -557,18 +602,22 @@ server_on_message(Call *c, const uint8_t *data, size_t len)
 		return 0;
 	msg = protobuf_c_message_unpack(c->method->input, NULL, len, data);
 	if (msg == NULL)
-		return GRPC2_INVALID_ARGUMENT;
+		return PROTOBUF_C_GRPC2_INTERNAL;	/* request parse failure */
 	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
 		if (c->sink != NULL && !c->sink->vtable->send_input(c->sink, msg)) {
 			protobuf_c_message_free_unpacked(msg, NULL);
-			return GRPC2_INTERNAL;
+			return PROTOBUF_C_GRPC2_INTERNAL;
 		}
 	} else if (c->got_request) {
+		/* request cardinality violation */
 		protobuf_c_message_free_unpacked(msg, NULL);
-		return GRPC2_INVALID_ARGUMENT;
+		return PROTOBUF_C_GRPC2_UNIMPLEMENTED;
 	} else {
+		/* Keep the request; the handler runs when the client has
+		 * half-closed, so that extra messages can be detected. */
 		c->got_request = 1;
-		server_invoke(c, msg);
+		c->request = msg;
+		return 0;
 	}
 	protobuf_c_message_free_unpacked(msg, NULL);
 	return 0;
@@ -583,7 +632,7 @@ server_on_remote_end(Call *c)
 	if (c->done || !c->dispatched)
 		return;
 	if (c->fhdr_got != 0 || c->in_msg) {
-		server_finish(c, GRPC2_INVALID_ARGUMENT, "truncated message");
+		server_finish(c, PROTOBUF_C_GRPC2_INTERNAL, "truncated message");
 		return;
 	}
 	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
@@ -598,7 +647,12 @@ server_on_remote_end(Call *c)
 			}
 		}
 	} else if (!c->got_request) {
-		server_finish(c, GRPC2_INVALID_ARGUMENT, "missing request");
+		server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "missing request");
+	} else {
+		ProtobufCMessage *request = c->request;
+		c->request = NULL;
+		server_invoke(c, request);
+		protobuf_c_message_free_unpacked(request, NULL);
 	}
 }
 
@@ -606,20 +660,25 @@ server_on_remote_end(Call *c)
 static void
 server_on_headers_end(Call *c, int fin)
 {
-	Grpc2Server *srv = c->conn->server;
+	ProtobufCGrpc2Server *srv = c->conn->server;
 	const char *p = c->path;
 	const char *slash;
 	size_t i, j;
 
-	server_reply_headers(c);
-	if (!c->http_ok || p == NULL || p[0] != '/') {
-		server_finish(c, GRPC2_INVALID_ARGUMENT, "not a gRPC request");
+	if (!c->saw_content_type && c->http_error == 0)
+		c->http_error = 415;
+	if (c->http_error != 0) {
+		server_http_error(c, c->http_error);
+		return;
+	}
+	if (p == NULL || p[0] != '/') {
+		server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "bad path");
 		return;
 	}
 	p++;
 	slash = strrchr(p, '/');
 	if (slash == NULL) {
-		server_finish(c, GRPC2_UNIMPLEMENTED, "bad path");
+		server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "bad path");
 		return;
 	}
 	for (i = 0; srv != NULL && i < srv->n_services; i++) {
@@ -638,18 +697,19 @@ server_on_headers_end(Call *c, int fin)
 				goto found;
 			}
 		}
-		server_finish(c, GRPC2_UNIMPLEMENTED, "unknown method");
+		server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "unknown method");
 		return;
 	}
-	server_finish(c, GRPC2_UNIMPLEMENTED, "unknown service");
+	server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "unknown service");
 	return;
 
 found:
 	c->dispatched = 1;
+	server_reply_headers(c);
 	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
 		server_invoke(c, NULL);
 		if (c->sink == NULL && !c->done)
-			server_finish(c, GRPC2_INTERNAL, "no input stream");
+			server_finish(c, PROTOBUF_C_GRPC2_INTERNAL, "no input stream");
 	}
 	if (fin)
 		server_on_remote_end(c);
@@ -657,6 +717,35 @@ found:
 
 /* ------------------------------------------------------------------ */
 /* client side */
+
+/* gRPC status for an HTTP response status that carried no grpc-status
+ * (see the "HTTP to gRPC Status Code Mapping" document). */
+static int
+status_from_http(int http_status)
+{
+	switch (http_status) {
+	case 400: return PROTOBUF_C_GRPC2_INTERNAL;
+	case 401: return PROTOBUF_C_GRPC2_UNAUTHENTICATED;
+	case 403: return PROTOBUF_C_GRPC2_PERMISSION_DENIED;
+	case 404: return PROTOBUF_C_GRPC2_UNIMPLEMENTED;
+	case 429: case 502: case 503: case 504:
+		return PROTOBUF_C_GRPC2_UNAVAILABLE;
+	default: return PROTOBUF_C_GRPC2_UNKNOWN;
+	}
+}
+
+/* gRPC status for an HTTP/2 RST_STREAM / error code from the peer. */
+static int
+status_from_http2_error(uint32_t error_code)
+{
+	switch (error_code) {
+	case 7:  return PROTOBUF_C_GRPC2_UNAVAILABLE;		/* REFUSED_STREAM */
+	case 8:  return PROTOBUF_C_GRPC2_CANCELLED;		/* CANCEL */
+	case 11: return PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED;	/* ENHANCE_YOUR_CALM */
+	case 12: return PROTOBUF_C_GRPC2_PERMISSION_DENIED;	/* INADEQUATE_SECURITY */
+	default: return PROTOBUF_C_GRPC2_INTERNAL;
+	}
+}
 
 static void
 client_complete(Call *c, int status, const char *message)
@@ -680,10 +769,10 @@ client_on_message(Call *c, const uint8_t *data, size_t len)
 	if (c->done)
 		return 0;
 	if (!(c->stream_flags & PROTOBUF_C_OUTPUT_STREAMING) && c->delivered)
-		return GRPC2_INTERNAL;
+		return PROTOBUF_C_GRPC2_INTERNAL;
 	msg = protobuf_c_message_unpack(c->method->output, NULL, len, data);
 	if (msg == NULL)
-		return GRPC2_INTERNAL;
+		return PROTOBUF_C_GRPC2_INTERNAL;
 	c->delivered = 1;
 	if (c->closure != NULL)
 		c->closure(msg, c->closure_data);
@@ -697,10 +786,13 @@ client_finish_from_trailers(Call *c)
 	if (c->done)
 		return;
 	if (c->grpc_status < 0) {
-		if (c->http_status != 200)
-			client_complete(c, GRPC2_UNAVAILABLE, "bad HTTP status");
-		else
-			client_complete(c, GRPC2_INTERNAL, "no grpc-status");
+		if (c->http_status != 200 && c->http_status != 0) {
+			char text[32];
+			snprintf(text, sizeof text, "HTTP %d", c->http_status);
+			client_complete(c, status_from_http(c->http_status), text);
+		} else {
+			client_complete(c, PROTOBUF_C_GRPC2_INTERNAL, "no grpc-status");
+		}
 		return;
 	}
 	client_complete(c, c->grpc_status, c->grpc_message);
@@ -752,7 +844,7 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	      void *closure_data)
 {
 	ClientService *cs = (ClientService *) service;
-	Grpc2Conn *conn = cs->conn;
+	ProtobufCGrpc2Conn *conn = cs->conn;
 	unsigned index = index_and_flags & ~PROTOBUF_C_STREAMING_MASK;
 	unsigned flags = index_and_flags & PROTOBUF_C_STREAMING_MASK;
 	const ProtobufCServiceDescriptor *d = service->descriptor;
@@ -796,7 +888,7 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 		/* can't happen before submission except for size/ENOMEM */
 		free(path);
 		c->stream_gone = 1;
-		client_complete(c, GRPC2_INTERNAL, "cannot send request");
+		client_complete(c, PROTOBUF_C_GRPC2_INTERNAL, "cannot send request");
 		call_unref(c);
 		return NULL;
 	}
@@ -815,7 +907,7 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	free(path);
 	if (sid < 0) {
 		c->stream_gone = 1;
-		client_complete(c, GRPC2_UNAVAILABLE, nghttp2_strerror((int) sid));
+		client_complete(c, PROTOBUF_C_GRPC2_UNAVAILABLE, nghttp2_strerror((int) sid));
 		call_unref(c);
 		return NULL;
 	}
@@ -842,7 +934,7 @@ client_service_destroy(ProtobufCService *service)
 }
 
 ProtobufCService *
-grpc2_conn_client_service(Grpc2Conn *conn,
+protobuf_c_grpc2_conn_client_service(ProtobufCGrpc2Conn *conn,
 			  const ProtobufCServiceDescriptor *descriptor)
 {
 	ClientService *cs;
@@ -868,14 +960,13 @@ static int
 begin_headers_cb(nghttp2_conn *ng, int64_t stream_id, void *conn_ud,
 		 void *stream_ud)
 {
-	Grpc2Conn *conn = conn_ud;
+	ProtobufCGrpc2Conn *conn = conn_ud;
 
 	if (conn->is_server && stream_ud == NULL) {
 		Call *c = call_new(conn, 1);
 		if (c == NULL)
 			return NGHTTP2_ERR_CALLBACK_FAILURE;
 		c->stream_id = stream_id;
-		c->http_ok = 1;
 		nghttp2_conn_set_stream_user_data(ng, stream_id, c);
 	}
 	return 0;
@@ -898,12 +989,14 @@ recv_header_cb(nghttp2_conn *ng, int64_t stream_id, int32_t token,
 			free(c->path);
 			c->path = xstrndup(v.base, v.len);
 		} else if (token == NGHTTP2_HPACK_TOKEN__METHOD) {
-			if (!(v.len == 4 && memcmp(v.base, "POST", 4) == 0))
-				c->http_ok = 0;
+			if (!(v.len == 4 && memcmp(v.base, "POST", 4) == 0) &&
+			    c->http_error == 0)
+				c->http_error = 405;
 		} else if (n.len == 12 && memcmp(n.base, "content-type", 12) == 0) {
+			c->saw_content_type = 1;
 			if (!(v.len >= 16 &&
 			      memcmp(v.base, "application/grpc", 16) == 0))
-				c->http_ok = 0;
+				c->http_error = 415;	/* wins over 405 */
 		}
 		return 0;
 	}
@@ -975,6 +1068,8 @@ recv_data_cb(nghttp2_conn *ng, int64_t stream_id, const uint8_t *data,
 		rv = call_feed(c, data, datalen, server_on_message);
 		if (rv != 0)
 			server_finish(c, rv, "bad request message");
+	} else if (c->http_status != 200) {
+		return 0;		/* an HTTP error page, not gRPC messages */
 	} else {
 		rv = call_feed(c, data, datalen, client_on_message);
 		if (rv != 0) {
@@ -1014,7 +1109,7 @@ stream_close_cb(nghttp2_conn *ng, uint32_t flags, int64_t stream_id,
 	if (c->is_server) {
 		if (!c->done) {
 			c->done = 1;
-			call_report_done(c, GRPC2_CANCELLED, "stream closed");
+			call_report_done(c, PROTOBUF_C_GRPC2_CANCELLED, "stream closed");
 		}
 		if (c->sink != NULL) {
 			ProtobufCInputStream *s = c->sink;
@@ -1026,11 +1121,18 @@ stream_close_cb(nghttp2_conn *ng, uint32_t flags, int64_t stream_id,
 	} else if (!c->done) {
 		if (c->grpc_status >= 0)
 			client_complete(c, c->grpc_status, c->grpc_message);
-		else if ((flags & NGHTTP2_STREAM_CLOSE_FLAG_ERROR_CODE_SET_LOCAL) &&
-			 error_code == HTTP2_CANCEL)
-			client_complete(c, GRPC2_CANCELLED, "cancelled");
-		else
-			client_complete(c, GRPC2_UNAVAILABLE, "stream closed");
+		else if (c->http_status != 200 && c->http_status != 0) {
+			char text[32];
+			snprintf(text, sizeof text, "HTTP %d", c->http_status);
+			client_complete(c, status_from_http(c->http_status), text);
+		} else if (flags & NGHTTP2_STREAM_CLOSE_FLAG_ERROR_CODE_SET) {
+			/* a local cancel, or the peer's RST_STREAM */
+			client_complete(c, status_from_http2_error(error_code),
+					nghttp2_http2_strerror(error_code));
+		} else {
+			client_complete(c, PROTOBUF_C_GRPC2_INTERNAL,
+					"stream closed without a status");
+		}
 	}
 	call_unref(c);
 	return 0;
@@ -1055,10 +1157,10 @@ fill_callbacks(nghttp2_callbacks *cb)
 /* ------------------------------------------------------------------ */
 /* public connection API */
 
-static Grpc2Conn *
-conn_new(Grpc2Server *server, const Grpc2ConnOptions *options, int is_server)
+static ProtobufCGrpc2Conn *
+conn_new(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnOptions *options, int is_server)
 {
-	Grpc2Conn *conn = calloc(1, sizeof(*conn));
+	ProtobufCGrpc2Conn *conn = calloc(1, sizeof(*conn));
 	nghttp2_callbacks cb;
 	nghttp2_settings settings;
 	int rv;
@@ -1100,20 +1202,20 @@ conn_new(Grpc2Server *server, const Grpc2ConnOptions *options, int is_server)
 	return conn;
 }
 
-Grpc2Conn *
-grpc2_conn_server_new(Grpc2Server *server, const Grpc2ConnOptions *options)
+ProtobufCGrpc2Conn *
+protobuf_c_grpc2_conn_server_new(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnOptions *options)
 {
 	return conn_new(server, options, 1);
 }
 
-Grpc2Conn *
-grpc2_conn_client_new(const Grpc2ConnOptions *options)
+ProtobufCGrpc2Conn *
+protobuf_c_grpc2_conn_client_new(const ProtobufCGrpc2ConnOptions *options)
 {
 	return conn_new(NULL, options, 0);
 }
 
 void
-grpc2_conn_free(Grpc2Conn *conn)
+protobuf_c_grpc2_conn_free(ProtobufCGrpc2Conn *conn)
 {
 	ClientService *cs, *next;
 
@@ -1130,9 +1232,13 @@ grpc2_conn_free(Grpc2Conn *conn)
 				c->sink = NULL;
 				s->vtable->destroy(s);
 			}
-			c->done = 1;
+			if (!c->done) {
+				c->done = 1;
+				call_report_done(c, PROTOBUF_C_GRPC2_CANCELLED,
+						 "connection closed");
+			}
 		} else {
-			client_complete(c, GRPC2_UNAVAILABLE, "connection closed");
+			client_complete(c, PROTOBUF_C_GRPC2_UNAVAILABLE, "connection closed");
 		}
 		call_unlink(c);
 		/* A server handler may still call its response closure later;
@@ -1152,25 +1258,40 @@ grpc2_conn_free(Grpc2Conn *conn)
 }
 
 int
-grpc2_conn_read(Grpc2Conn *conn, const uint8_t *data, size_t len)
+protobuf_c_grpc2_conn_read(ProtobufCGrpc2Conn *conn, const uint8_t *data, size_t len)
 {
 	return nghttp2_conn_read(conn->ng, data, len, now_ns());
 }
 
 ssize_t
-grpc2_conn_write(Grpc2Conn *conn, uint8_t *buf, size_t len)
+protobuf_c_grpc2_conn_write(ProtobufCGrpc2Conn *conn, uint8_t *buf, size_t len)
 {
 	return nghttp2_conn_write(conn->ng, buf, len, now_ns());
 }
 
 uint64_t
-grpc2_conn_get_expiry(const Grpc2Conn *conn)
+protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn)
 {
 	return nghttp2_conn_get_expiry(conn->ng);
 }
 
+int64_t
+protobuf_c_grpc2_conn_get_timeout_ns(const ProtobufCGrpc2Conn *conn)
+{
+	nghttp2_tstamp expiry = nghttp2_conn_get_expiry(conn->ng);
+	nghttp2_tstamp now;
+
+	if (expiry == UINT64_MAX)
+		return -1;
+	now = now_ns();
+	if (expiry <= now)
+		return 0;
+	return (expiry - now > (nghttp2_tstamp) INT64_MAX)
+		? INT64_MAX : (int64_t) (expiry - now);
+}
+
 int
-grpc2_conn_handle_expiry(Grpc2Conn *conn)
+protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn)
 {
 	return nghttp2_conn_handle_expiry(conn->ng, now_ns());
 }
@@ -1178,23 +1299,28 @@ grpc2_conn_handle_expiry(Grpc2Conn *conn)
 /* ------------------------------------------------------------------ */
 /* server registry */
 
-Grpc2Server *
-grpc2_server_new(void)
+ProtobufCGrpc2Server *
+protobuf_c_grpc2_server_new(void)
 {
-	return calloc(1, sizeof(Grpc2Server));
+	return calloc(1, sizeof(ProtobufCGrpc2Server));
 }
 
 void
-grpc2_server_free(Grpc2Server *server)
+protobuf_c_grpc2_server_free(ProtobufCGrpc2Server *server)
 {
 	if (server == NULL)
 		return;
+	if (server->io != NULL) {
+		/* I/O servers shut down asynchronously. */
+		protobuf_c_grpc2__server_io_free(server);
+		return;
+	}
 	free(server->services);
 	free(server);
 }
 
 int
-grpc2_server_add_service(Grpc2Server *server, ProtobufCService *service)
+protobuf_c_grpc2_server_add_service(ProtobufCGrpc2Server *server, ProtobufCService *service)
 {
 	const char *name = service->descriptor->name;
 	ProtobufCService **n;

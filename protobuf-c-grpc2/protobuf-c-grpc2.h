@@ -2,7 +2,7 @@
  * protobuf-c-grpc2: gRPC over HTTP/2 for protobuf-c, built on nghttp2-v2.
  *
  * The API is "sans-I/O": the application owns the sockets (and TLS). It feeds
- * bytes it received to grpc2_conn_read() and asks grpc2_conn_write() for bytes
+ * bytes it received to protobuf_c_grpc2_conn_read() and asks protobuf_c_grpc2_conn_write() for bytes
  * to transmit. Servers and clients are both described using the standard
  * ProtobufCService interface, including the streaming extensions of
  * ProtobufCService::invoke (see protobuf-c.h).
@@ -25,35 +25,35 @@ extern "C" {
 
 /** gRPC status codes. */
 enum {
-	GRPC2_OK = 0,
-	GRPC2_CANCELLED = 1,
-	GRPC2_UNKNOWN = 2,
-	GRPC2_INVALID_ARGUMENT = 3,
-	GRPC2_DEADLINE_EXCEEDED = 4,
-	GRPC2_NOT_FOUND = 5,
-	GRPC2_ALREADY_EXISTS = 6,
-	GRPC2_PERMISSION_DENIED = 7,
-	GRPC2_RESOURCE_EXHAUSTED = 8,
-	GRPC2_FAILED_PRECONDITION = 9,
-	GRPC2_ABORTED = 10,
-	GRPC2_OUT_OF_RANGE = 11,
-	GRPC2_UNIMPLEMENTED = 12,
-	GRPC2_INTERNAL = 13,
-	GRPC2_UNAVAILABLE = 14,
-	GRPC2_DATA_LOSS = 15,
-	GRPC2_UNAUTHENTICATED = 16
+	PROTOBUF_C_GRPC2_OK = 0,
+	PROTOBUF_C_GRPC2_CANCELLED = 1,
+	PROTOBUF_C_GRPC2_UNKNOWN = 2,
+	PROTOBUF_C_GRPC2_INVALID_ARGUMENT = 3,
+	PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED = 4,
+	PROTOBUF_C_GRPC2_NOT_FOUND = 5,
+	PROTOBUF_C_GRPC2_ALREADY_EXISTS = 6,
+	PROTOBUF_C_GRPC2_PERMISSION_DENIED = 7,
+	PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED = 8,
+	PROTOBUF_C_GRPC2_FAILED_PRECONDITION = 9,
+	PROTOBUF_C_GRPC2_ABORTED = 10,
+	PROTOBUF_C_GRPC2_OUT_OF_RANGE = 11,
+	PROTOBUF_C_GRPC2_UNIMPLEMENTED = 12,
+	PROTOBUF_C_GRPC2_INTERNAL = 13,
+	PROTOBUF_C_GRPC2_UNAVAILABLE = 14,
+	PROTOBUF_C_GRPC2_DATA_LOSS = 15,
+	PROTOBUF_C_GRPC2_UNAUTHENTICATED = 16
 };
 
 /** Upper-case name of a status code, e.g. "NOT_FOUND". */
-const char *grpc2_status_name(int status);
+const char *protobuf_c_grpc2_status_name(int status);
 
 /** A set of services that connections can serve. */
-typedef struct Grpc2Server Grpc2Server;
+typedef struct ProtobufCGrpc2Server ProtobufCGrpc2Server;
 /** One HTTP/2 connection, either the client or the server end. */
-typedef struct Grpc2Conn Grpc2Conn;
+typedef struct ProtobufCGrpc2Conn ProtobufCGrpc2Conn;
 
 /** Options for a connection; zero-initialise and set what you need. */
-typedef struct Grpc2ConnOptions {
+typedef struct ProtobufCGrpc2ConnOptions {
 	/** Largest accepted message in bytes; 0 means 4 MiB. */
 	size_t max_message_size;
 	/** Client only: value of the `:authority` header; default "localhost". */
@@ -63,39 +63,40 @@ typedef struct Grpc2ConnOptions {
 	/**
 	 * Optional. Called when a call finishes, on the client and the server
 	 * alike. This is how errors are reported for calls whose closure only
-	 * sees a NULL message. `message` may be NULL.
+	 * sees a NULL message. `message` may be NULL. `method` is NULL on the
+	 * server when the request named no known method (or was not gRPC).
 	 */
 	void (*on_call_done)(const ProtobufCMethodDescriptor *method,
 			     int status,
 			     const char *message,
 			     void *user_data);
 	void *user_data;
-} Grpc2ConnOptions;
+} ProtobufCGrpc2ConnOptions;
 
 /**
  * Create a server. Services are not owned by the server; they must outlive
  * every connection created from it.
  */
-Grpc2Server *grpc2_server_new(void);
-void grpc2_server_free(Grpc2Server *server);
+ProtobufCGrpc2Server *protobuf_c_grpc2_server_new(void);
+void protobuf_c_grpc2_server_free(ProtobufCGrpc2Server *server);
 
 /**
  * Register a service, which is looked up by its descriptor's full name.
  * Returns 0, or -1 if the descriptor has no name (CODE_SIZE) or the name is
  * already registered.
  */
-int grpc2_server_add_service(Grpc2Server *server, ProtobufCService *service);
+int protobuf_c_grpc2_server_add_service(ProtobufCGrpc2Server *server, ProtobufCService *service);
 
 /** Create the server end of a connection. Returns NULL on failure. */
-Grpc2Conn *grpc2_conn_server_new(Grpc2Server *server,
-				 const Grpc2ConnOptions *options);
+ProtobufCGrpc2Conn *protobuf_c_grpc2_conn_server_new(ProtobufCGrpc2Server *server,
+				 const ProtobufCGrpc2ConnOptions *options);
 
 /** Create the client end of a connection. Returns NULL on failure. */
-Grpc2Conn *grpc2_conn_client_new(const Grpc2ConnOptions *options);
+ProtobufCGrpc2Conn *protobuf_c_grpc2_conn_client_new(const ProtobufCGrpc2ConnOptions *options);
 
 /**
  * Free a connection. Pending client calls are completed with
- * GRPC2_UNAVAILABLE and pending server input streams are destroyed. A server
+ * PROTOBUF_C_GRPC2_UNAVAILABLE and pending server input streams are destroyed. A server
  * handler that still holds a response closure may keep calling it; the calls
  * are ignored, and the final one (NULL message, or the first response of a
  * non-output-streaming method) releases the call's memory. Handlers that
@@ -103,14 +104,14 @@ Grpc2Conn *grpc2_conn_client_new(const Grpc2ConnOptions *options);
  * ProtobufCInputStream objects still held by the application stay valid
  * (sending on them fails) until the application destroys them.
  */
-void grpc2_conn_free(Grpc2Conn *conn);
+void protobuf_c_grpc2_conn_free(ProtobufCGrpc2Conn *conn);
 
 /**
  * Process bytes received from the peer. Application callbacks and service
  * handlers run from inside this call. Returns 0, or a negative value when
  * the connection is broken and must be closed.
  */
-int grpc2_conn_read(Grpc2Conn *conn, const uint8_t *data, size_t len);
+int protobuf_c_grpc2_conn_read(ProtobufCGrpc2Conn *conn, const uint8_t *data, size_t len);
 
 /**
  * Produce bytes to send to the peer, at most `len` (16384 is a good size).
@@ -118,14 +119,21 @@ int grpc2_conn_read(Grpc2Conn *conn, const uint8_t *data, size_t len);
  * call it repeatedly until it returns 0) or a negative value when the
  * connection must be closed.
  */
-ssize_t grpc2_conn_write(Grpc2Conn *conn, uint8_t *buf, size_t len);
+ssize_t protobuf_c_grpc2_conn_write(ProtobufCGrpc2Conn *conn, uint8_t *buf, size_t len);
 
-/** Absolute time (CLOCK_MONOTONIC ns) at which grpc2_conn_handle_expiry()
+/** Absolute time (CLOCK_MONOTONIC ns) at which protobuf_c_grpc2_conn_handle_expiry()
  *  must next be called, or UINT64_MAX for none. */
-uint64_t grpc2_conn_get_expiry(const Grpc2Conn *conn);
+uint64_t protobuf_c_grpc2_conn_get_expiry(const ProtobufCGrpc2Conn *conn);
+/**
+ * Nanoseconds until protobuf_c_grpc2_conn_handle_expiry() must be called: 0 if that is
+ * already due, or -1 if there is no pending timer. Use this (rather than
+ * protobuf_c_grpc2_conn_get_expiry()) to arm an event loop timer, since the clock
+ * behind the absolute time may differ from the loop's.
+ */
+int64_t protobuf_c_grpc2_conn_get_timeout_ns(const ProtobufCGrpc2Conn *conn);
 /** Handle expired timers. Returns a negative value if the connection must
  *  be closed. */
-int grpc2_conn_handle_expiry(Grpc2Conn *conn);
+int protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn);
 
 /**
  * Get a client-side ProtobufCService for the given service descriptor. Use
@@ -138,8 +146,8 @@ int grpc2_conn_handle_expiry(Grpc2Conn *conn);
  * The service is owned by the connection and is freed with it; calling
  * protobuf_c_service_destroy() on it is a no-op.
  */
-ProtobufCService *grpc2_conn_client_service(
-	Grpc2Conn *conn,
+ProtobufCService *protobuf_c_grpc2_conn_client_service(
+	ProtobufCGrpc2Conn *conn,
 	const ProtobufCServiceDescriptor *descriptor);
 
 #ifdef __cplusplus
