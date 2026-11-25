@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package stress;
+
+// Every request carries the sender's clock reading, which the server echoes
+// back, so the client can measure latency without keeping per-call state.
+message Req {
+  int64 id = 1;
+  int64 sent_ns = 2;
+  int32 duration_ms = 3;   // Spin and Delay: how long
+}
+
+message Rsp {
+  int64 id = 1;
+  int64 sent_ns = 2;
+}
+
+service Stress {
+  // Answers immediately.
+  rpc Noop(Req) returns (Rsp);
+  // Burns CPU in the server for duration_ms, then answers.
+  rpc Spin(Req) returns (Rsp);
+  // Answers after duration_ms, from a timer (the server stays free meanwhile).
+  rpc Delay(Req) returns (Rsp);
+  // Answers every request message with one response message.
+  rpc Echo(stream Req) returns (stream Rsp);
+}

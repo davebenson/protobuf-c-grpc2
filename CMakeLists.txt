@@ -206,6 +206,29 @@ if(BUILD_TESTS)
   endforeach()
 endif()
 
+# ---- stress: forks a server and N clients (see stress/stress.c) ----
+if(BUILD_TESTS AND (LIBUV_FOUND OR POLL_FOUND))
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/stress)
+  grpc2_protoc(stress stress)
+  set(STRESS_BINARIES "")
+  foreach(backend uv poll)
+    if((backend STREQUAL "uv" AND LIBUV_FOUND) OR
+       (backend STREQUAL "poll" AND POLL_FOUND))
+      add_executable(stress-${backend} stress/stress.c
+        t/loop-backend-${backend}.c
+        ${CMAKE_CURRENT_BINARY_DIR}/stress/stress.pb-c.c)
+      target_include_directories(stress-${backend} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/t
+        ${CMAKE_CURRENT_BINARY_DIR}/stress)
+      target_link_libraries(stress-${backend} protobuf-c-grpc2-${backend})
+      list(APPEND STRESS_BINARIES $<TARGET_FILE:stress-${backend}>)
+    endif()
+  endforeach()
+  add_test(NAME stress-smoke
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/stress/smoke.sh ${STRESS_BINARIES})
+  set_tests_properties(stress-smoke PROPERTIES TIMEOUT 300)
+endif()
+
 if(BUILD_EXAMPLES AND LIBUV_FOUND)
   grpc2_protoc(examples greeter)
   foreach(prog libuv-server libuv-client)

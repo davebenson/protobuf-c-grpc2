@@ -20,7 +20,8 @@ EXTRA_DIST = CMakeLists.txt \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	examples/greeter.proto examples/libuv-server.c \
-	examples/libuv-client.c examples/smoke-test.sh
+	examples/libuv-client.c examples/smoke-test.sh \
+	stress/stress.proto stress/stress.c stress/smoke.sh
 
 # ---- core: no event loop or TLS dependencies ----
 lib_LTLIBRARIES += libprotobuf-c-grpc2.la
@@ -134,6 +135,31 @@ nodist_t_test_endpoints_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.
 t_test_endpoints_poll_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_endpoints_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2-openssl.la \
 	libprotobuf-c-grpc2.la $(OPENSSL_LIBS)
+endif
+
+# ---- stress: forks a server and N clients (see stress/stress.c) ----
+stress/stress.pb-c.c stress/stress.pb-c.h: $(top_srcdir)/stress/stress.proto
+	$(AM_V_GEN)$(MKDIR_P) stress && $(PROTOC) --plugin=protoc-gen-c=$(PROTOC_GEN_C) -I$(top_srcdir)/stress --c_out=$(top_builddir)/stress $(top_srcdir)/stress/stress.proto
+CLEANFILES += stress/stress.pb-c.c stress/stress.pb-c.h
+if BUILD_UV_TESTS
+BUILT_SOURCES += stress/stress.pb-c.c stress/stress.pb-c.h
+check_PROGRAMS += stress/stress-uv
+TESTS += stress/smoke.sh
+stress_stress_uv_SOURCES = stress/stress.c t/loop-backend-uv.c
+nodist_stress_stress_uv_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
+stress_stress_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/stress
+stress_stress_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+endif
+if BUILD_POLL_TESTS
+BUILT_SOURCES += stress/stress.pb-c.c stress/stress.pb-c.h
+check_PROGRAMS += stress/stress-poll
+if !BUILD_UV_TESTS
+TESTS += stress/smoke.sh
+endif
+stress_stress_poll_SOURCES = stress/stress.c t/loop-backend-poll.c
+nodist_stress_stress_poll_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
+stress_stress_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/stress
+stress_stress_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
 endif
 
 # ---- examples ----

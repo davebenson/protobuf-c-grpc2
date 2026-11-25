@@ -176,6 +176,24 @@ functions on its `base` member, which check the message type at run time).
 Stream implementations set `input_descriptor` to the request type. Errors are reported through the
 `on_call_done` option.
 
+## Stress testing
+
+`stress/stress.c` forks a server and N clients on one machine. Each client
+keeps a fixed number of requests in flight and stops after a given number of
+them have been answered; the program prints throughput and latency and exits
+nonzero if any call failed or went missing. It is built once per I/O backend
+(`stress-uv`, `stress-poll`) by CMake and by `make check`, which also runs a
+short run of every method (`stress/smoke.sh`).
+
+    stress-poll -n 8 -p 50 -r 5000 -m mixed -d 1
+
+* `-n` clients (default 1), `-p` requests in flight per client (10),
+  `-r` responses each client waits for (1000), `-P` port (50099).
+* `-m` picks the method: `noop` (answers at once), `spin` (the server
+  busy-waits `-d` milliseconds), `delay` (the server answers after `-d`
+  milliseconds from a timer), `echo` (a bidirectional stream of `-c`
+  messages, each answered), or `mixed` (all of them in turn).
+
 ## Examples
 
 `examples/` has a trivial libuv server and client for a small Greeter service
