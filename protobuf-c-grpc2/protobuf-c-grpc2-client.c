@@ -119,6 +119,8 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 	if (c->io->ref != NULL)
 		c->io->ref(c->io);	/* else ownership is transferred */
 	c->sts = o.secure_transport;
+	if (c->sts != NULL && c->sts->ref != NULL)
+		c->sts->ref(c->sts);	/* else ownership is transferred */
 	c->state = C_IDLE;
 	return c;
 }

@@ -144,6 +144,8 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 		if (o.io->ref != NULL)
 			o.io->ref(o.io);	/* else ownership is transferred */
 		server->sts = o.secure_transport;
+		if (o.secure_transport != NULL && o.secure_transport->ref != NULL)
+			o.secure_transport->ref(o.secure_transport);
 	}
 	return server;
 }

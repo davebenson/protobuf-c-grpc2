@@ -20,17 +20,18 @@ supported.
 The libraries build against *installed* copies of these, so this package can
 be released and packaged separately from protobuf-c itself.
 
-It builds three libraries, each with its own pkg-config file and headers, so
+It builds four libraries, each with its own pkg-config file and headers, so
 distributions can split it into separate packages:
 
 | library                     | needs            | provides |
 |-----------------------------|------------------|----------|
 | `protobuf-c-grpc2`          | protobuf-c, nghttp2-v2 | the HTTP/2+gRPC engine, servers and clients, and the plugin interfaces (no event loop or TLS) |
 | `protobuf-c-grpc2-uv`       | libuv            | a libuv I/O system |
+| `protobuf-c-grpc2-poll`     | POSIX            | a small poll(2) event loop and I/O system, for programs without an event loop of their own |
 | `protobuf-c-grpc2-openssl`  | OpenSSL          | an OpenSSL secure transport |
 
-`--without-uv` / `--without-openssl` (or `-DWITH_UV=OFF` /
-`-DWITH_OPENSSL=OFF`) skip an adapter; they are otherwise built when found.
+`--without-uv` / `--without-poll` / `--without-openssl` (or `-DWITH_UV=OFF` /
+`-DWITH_POLL=OFF` / `-DWITH_OPENSSL=OFF`) skip an adapter; they are otherwise built when found.
 
 ## Building
 
@@ -66,16 +67,38 @@ zero.
 
 Without `secure_transport` connections are cleartext HTTP/2 (h2c), which is
 what you want behind a TLS-terminating load balancer. With it, TLS is
-required and ALPN must negotiate `h2`. On success the server owns `io` and
-`secure_transport`; if `protobuf_c_grpc2_server_new()` fails they stay with
-you.
+required and ALPN must negotiate `h2`. On success the server takes its own
+references to `io` and `secure_transport` (so either can be shared with other
+servers and clients); if `protobuf_c_grpc2_server_new()` fails it takes
+nothing.
 
 `io` and `secure_transport` are the interfaces in `protobuf-c-grpc2-io.h`: a
 `ProtobufCGrpc2IoSystem` (TCP listen, connect and streams, timers, and a hook
 that runs before the loop blocks) and a `ProtobufCGrpc2SecureTransportSystem`
-(a sans-I/O, BIO-style TLS session). The adapter libraries provide libuv and
-OpenSSL versions; implement the interfaces to support another event loop or
+(a sans-I/O, BIO-style TLS session). The adapter libraries provide libuv,
+poll(2) and OpenSSL versions; implement the interfaces to support another event loop or
 TLS library. The core never sees libuv or OpenSSL.
+
+### Without an event loop: the poll adapter
+
+`protobuf-c-grpc2-poll.h` provides a single-threaded loop that you run
+yourself. The loop is separate from the I/O systems on it, so a server and a
+client can share one:
+
+    ProtobufCGrpc2PollLoop *loop = protobuf_c_grpc2_poll_loop_new();
+    o.io = protobuf_c_grpc2_io_system_new_poll(loop);
+    ...
+    protobuf_c_grpc2_poll_loop_run(loop);   /* until idle or _stop(loop) */
+
+`protobuf_c_grpc2_poll_loop_run_once(loop, timeout_ms)` runs one iteration, to
+drive the loop from another one, and `protobuf_c_grpc2_poll_loop_close()` frees
+it (failing if anything created on it is still alive). Host names given to
+`connect` are resolved with a blocking `getaddrinfo()`; numeric addresses
+never block. `poll(2)` is linear in the number of descriptors, which is fine
+for thousands of connections but not for far more.
+
+The tests under `t/` that need an event loop (`endpoints`, `client`, `bulk`)
+run once on each backend, through the small shim in `t/loop-backend.h`.
 
 ## Building a client
 

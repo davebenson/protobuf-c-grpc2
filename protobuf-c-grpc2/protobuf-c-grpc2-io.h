@@ -196,8 +196,23 @@ struct ProtobufCGrpc2SecureTransportSystem {
 	ProtobufCGrpc2SecureTransport *(*new_client)(
 		ProtobufCGrpc2SecureTransportSystem *sts,
 		const char *server_name);
-	/** Optional. Called when the owner is freed. */
+	/**
+	 * Optional. Release one reference to the system, freeing it when the
+	 * last one goes. Servers and clients call it when they are freed.
+	 */
 	void (*destroy)(ProtobufCGrpc2SecureTransportSystem *sts);
+	/**
+	 * Optional. Take one reference. Servers and clients call it when
+	 * they are created with the system as their `secure_transport`
+	 * option, so one system can be shared. A system with a `ref` member
+	 * is created "floating", as with g_object_ref_sink(): the first call
+	 * claims its creation reference instead of adding one, so the
+	 * creator never releases it, and a later call adds a reference. If
+	 * nothing ever takes it, the creator frees it with `destroy`. A
+	 * system without `ref` is instead owned by the first server or
+	 * client it is given to, which calls `destroy` on it.
+	 */
+	void (*ref)(ProtobufCGrpc2SecureTransportSystem *sts);
 };
 
 #ifdef __cplusplus

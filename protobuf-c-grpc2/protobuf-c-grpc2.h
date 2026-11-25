@@ -116,8 +116,9 @@ typedef struct ProtobufCGrpc2ServerOptions ProtobufCGrpc2ServerOptions;
 /**
  * Create a server from `options` (which may be NULL for an empty registry
  * with default settings). Services are not owned by the server; they must
- * outlive it. Returns NULL on failure, and then `io` and `secure_transport`
- * stay with the caller; on success the server owns them.
+ * outlive it. Returns NULL on failure, and then nothing has been taken. On
+ * success the server takes its own references to `io` and `secure_transport`
+ * (see ProtobufCGrpc2IoSystem::ref).
  */
 ProtobufCGrpc2Server *protobuf_c_grpc2_server_new(
 	const ProtobufCGrpc2ServerOptions *options);
@@ -339,8 +340,8 @@ typedef struct ProtobufCGrpc2ClientOptions {
 
 /**
  * Create a client; no connection is made until the first call. Returns NULL
- * on failure, and then `io` and `secure_transport` stay with the caller; on
- * success the client owns them.
+ * on failure, and then nothing has been taken. On success the client takes
+ * its own references to `io` and `secure_transport`.
  */
 ProtobufCGrpc2Client *protobuf_c_grpc2_client_new(
 	const ProtobufCGrpc2ClientOptions *options);

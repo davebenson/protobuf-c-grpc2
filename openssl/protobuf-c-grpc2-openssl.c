@@ -9,6 +9,8 @@
 typedef struct {
 	ProtobufCGrpc2SecureTransportSystem base;	/* must be first */
 	SSL_CTX *ctx;
+	int refs;
+	int floating;	/* the creation reference is not yet claimed */
 } OsslSystem;
 
 typedef struct {
@@ -206,10 +208,26 @@ sys_new_client(ProtobufCGrpc2SecureTransportSystem *base,
 	return &s->base;
 }
 
+/* Like g_object_ref_sink(): the first reference taken claims the creation
+ * reference instead of adding one. */
+static void
+sys_ref(ProtobufCGrpc2SecureTransportSystem *base)
+{
+	OsslSystem *sys = (OsslSystem *) base;
+
+	if (sys->floating)
+		sys->floating = 0;
+	else
+		sys->refs++;
+}
+
 static void
 sys_destroy(ProtobufCGrpc2SecureTransportSystem *base)
 {
 	OsslSystem *sys = (OsslSystem *) base;
+
+	if (--sys->refs > 0)
+		return;
 	SSL_CTX_free(sys->ctx);
 	free(sys);
 }
@@ -226,6 +244,9 @@ protobuf_c_grpc2_secure_transport_system_new_openssl(SSL_CTX *ctx)
 	sys->base.new_server = sys_new_server;
 	sys->base.new_client = sys_new_client;
 	sys->base.destroy = sys_destroy;
+	sys->base.ref = sys_ref;
+	sys->refs = 1;
+	sys->floating = 1;
 	SSL_CTX_set_alpn_select_cb(ctx, alpn_select, NULL);
 	/* gRPC requires TLS 1.2 or later. */
 	if (SSL_CTX_get_min_proto_version(ctx) < TLS1_2_VERSION)
