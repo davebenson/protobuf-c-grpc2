@@ -20,8 +20,8 @@
 
 #include "protobuf-c-grpc2/protobuf-c-grpc2.h"
 #include "protobuf-c-grpc2/protobuf-c-grpc2-openssl.h"
-#include "protobuf-c-grpc2/protobuf-c-grpc2-uv.h"
 #include "greeter.pb-c.h"
+#include "loop-backend.h"
 
 /* ---- the service ---- */
 
@@ -143,11 +143,12 @@ make_cert(EVP_PKEY *key, const char *cn)
 
 /* ---- the run ---- */
 
-static uv_loop_t *loop;
+static TestLoop *loop;
 static ProtobufCGrpc2Server *server;
 static ProtobufCGrpc2Client *client;
 static ProtobufCService *svc;
-static uv_timer_t finish_timer;
+static ProtobufCGrpc2IoSystem *timer_io;	/* only for finish_timer */
+static void *finish_timer;
 static int pending;
 static int n_ok, n_failed, n_deadline;
 static int reply_count;
@@ -156,7 +157,7 @@ static int mode_;
 static int probing;			/* a call that must fail synchronously */
 static int fast_fail_status;
 
-static void finish_cb(uv_timer_t *t);
+static void finish_cb(void *unused);
 
 static void
 on_call_done(const ProtobufCMethodDescriptor *m, int status, const char *msg,
@@ -174,7 +175,7 @@ on_call_done(const ProtobufCMethodDescriptor *m, int status, const char *msg,
 	if (status == PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED)
 		n_deadline++;
 	if (--pending == 0)
-		uv_timer_start(&finish_timer, finish_cb, 0, 0);
+		timer_io->timer_start(timer_io, finish_timer, 0);
 }
 
 static void
@@ -186,9 +187,9 @@ on_reply(const Example__HelloReply *r, void *d)
 }
 
 static void
-finish_cb(uv_timer_t *t)
+finish_cb(void *unused)
 {
-	(void) t;
+	(void) unused;
 	if (mode_ == 2) {
 		/* the failed handshake put the client into backoff: a new call
 		 * must fail at once, from inside invoke() */
@@ -204,7 +205,10 @@ finish_cb(uv_timer_t *t)
 	client = NULL;
 	protobuf_c_grpc2_server_free(server);
 	server = NULL;
-	uv_close((uv_handle_t *) &finish_timer, NULL);
+	timer_io->timer_free(timer_io, finish_timer);
+	finish_timer = NULL;
+	timer_io->destroy(timer_io);
+	timer_io = NULL;
 }
 
 static void
@@ -244,13 +248,13 @@ start_calls(void)
  * leave the I/O system with the caller.
  */
 static void
-check_option_handling(uv_loop_t *l, ProtobufCService *const *services)
+check_option_handling(TestLoop *l, ProtobufCService *const *services)
 {
 	ProtobufCService *twice[2] = { services[0], services[0] };
 	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
 	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	ProtobufCGrpc2Server *server;
-	ProtobufCGrpc2IoSystem *io = protobuf_c_grpc2_io_system_new_uv(l);
+	ProtobufCGrpc2IoSystem *io = test_loop_new_io(l);
 
 	assert(io != NULL);
 
@@ -299,7 +303,7 @@ check_option_handling(uv_loop_t *l, ProtobufCService *const *services)
 	assert(server != NULL);			/* it now owns io */
 	protobuf_c_grpc2_server_free(server);
 	/* let the shutdown complete: it frees the I/O system */
-	uv_run(l, UV_RUN_DEFAULT);
+	test_loop_run(l);
 
 	/* io was still ours after the failures above, which is why using it
 	 * for the last success was legal */
@@ -321,7 +325,7 @@ run(int mode)
 	mode_ = mode;
 	n_ok = n_failed = n_deadline = reply_count = 0;
 	slow_closure = NULL;
-	loop = uv_loop_new();
+	loop = test_loop_new();
 	assert(loop != NULL);
 
 	services[0] = &greeter.base;
@@ -330,14 +334,14 @@ run(int mode)
 	/* ---- server and client options ---- */
 	so.services = services;
 	so.n_services = 1;
-	so.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	so.io = test_loop_new_io(loop);
 	assert(so.io != NULL);
 	so.on_call_done = NULL;
 
 	co.host = "localhost";
 	co.port = port;
-	co.io = protobuf_c_grpc2_io_system_new_uv(loop);
-	assert(co.io != NULL);
+	/* The server and client share one I/O system (one reference each). */
+	co.io = so.io;
 	co.on_call_done = on_call_done;
 
 	if (mode > 0) {
@@ -350,6 +354,21 @@ run(int mode)
 			protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
 		assert(so.secure_transport != NULL);
 		assert(SSL_CTX_get_min_proto_version(sctx) >= TLS1_2_VERSION);
+
+		/* reference counting: the first ref claims the floating
+		 * creation reference, so two refs need two releases; a system
+		 * nobody took is freed by one release */
+		{
+			ProtobufCGrpc2SecureTransportSystem *t =
+				protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+			assert(t != NULL && t->ref != NULL);
+			t->ref(t);
+			t->ref(t);
+			t->destroy(t);
+			t->destroy(t);	/* freed here (ASan: no leak, no reuse) */
+			t = protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+			t->destroy(t);
+		}
 
 		cctx = SSL_CTX_new(TLS_client_method());
 		SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, NULL);
@@ -374,9 +393,13 @@ run(int mode)
 						  &example__greeter__descriptor);
 	assert(svc != NULL);
 
-	uv_timer_init(loop, &finish_timer);
+	timer_io = test_loop_new_io(loop);
+	timer_io->ref(timer_io);	/* claims the creation ref */
+	assert(timer_io != NULL);
+	finish_timer = timer_io->timer_new(timer_io, finish_cb, NULL);
+	assert(finish_timer != NULL);
 	start_calls();
-	uv_run(loop, UV_RUN_DEFAULT);
+	test_loop_run(loop);
 
 	/* ---- results ---- */
 	if (mode == 2) {
@@ -396,9 +419,8 @@ run(int mode)
 	assert(server == NULL && client == NULL);
 	if (slow_closure != NULL)
 		slow_closure(NULL, slow_closure_data);	/* ends it; frees the call */
-	rv = uv_loop_close(loop);		/* fails if any handle leaked */
+	rv = test_loop_close(loop);		/* fails if anything leaked */
 	assert(rv == 0);
-	free(loop);
 
 	SSL_CTX_free(cctx);
 	SSL_CTX_free(sctx);
@@ -412,11 +434,11 @@ int
 main(void)
 {
 	run(0);
-	puts("endpoints: plaintext ok");
+	printf("endpoints[%s]: plaintext ok\n", test_backend_name());
 	run(1);
-	puts("endpoints: TLS ok");
+	printf("endpoints[%s]: TLS ok\n", test_backend_name());
 	run(2);
-	puts("endpoints: untrusted certificate rejected ok");
-	puts("endpoints: ok");
+	printf("endpoints[%s]: untrusted certificate rejected ok\n", test_backend_name());
+	printf("endpoints[%s]: ok\n", test_backend_name());
 	return 0;
 }

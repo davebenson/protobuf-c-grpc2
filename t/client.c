@@ -10,8 +10,8 @@
 #include <unistd.h>
 
 #include "protobuf-c-grpc2/protobuf-c-grpc2.h"
-#include "protobuf-c-grpc2/protobuf-c-grpc2-uv.h"
 #include "greeter.pb-c.h"
+#include "loop-backend.h"
 
 /* ---- a minimal Greeter ---- */
 
@@ -47,13 +47,14 @@ greeter_collect(Example__Greeter_Service *s, const Example__HelloRequest *first,
 
 /* ---- the test ---- */
 
-static uv_loop_t *loop;
+static TestLoop *loop;
 static unsigned port;
 static Example__Greeter_Service greeter;
 static ProtobufCGrpc2Server *server;
 static ProtobufCGrpc2Client *client;
 static ProtobufCService *svc;
-static uv_timer_t step_timer;
+static ProtobufCGrpc2IoSystem *timer_io;	/* only for step_timer */
+static void *step_timer;
 static int phase;
 static int pending;
 static int probing;
@@ -62,7 +63,7 @@ static int n_done;
 static int sync_status;
 static char last_reply[64];
 
-static void step_cb(uv_timer_t *t);
+static void step_cb(void *unused);
 
 static void
 start_server(void)
@@ -72,7 +73,7 @@ start_server(void)
 
 	so.services = services;
 	so.n_services = 1;
-	so.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	so.io = test_loop_new_io(loop);
 	assert(so.io != NULL);
 	server = protobuf_c_grpc2_server_new(&so);
 	assert(server != NULL);
@@ -92,7 +93,7 @@ on_call_done(const ProtobufCMethodDescriptor *m, int status, const char *msg,
 		last_status[n_done] = status;
 	n_done++;
 	if (--pending == 0)
-		uv_timer_start(&step_timer, step_cb, 0, 0);
+		timer_io->timer_start(timer_io, step_timer, 0);
 }
 
 static void
@@ -114,9 +115,9 @@ say(const char *name)
 }
 
 static void
-step_cb(uv_timer_t *t)
+step_cb(void *unused)
 {
-	(void) t;
+	(void) unused;
 	switch (phase) {
 	case 0:
 		/* A: nobody is listening, so connecting fails */
@@ -134,7 +135,7 @@ step_cb(uv_timer_t *t)
 		puts("client: connect failure and backoff ok");
 		start_server();
 		phase = 1;
-		uv_timer_start(&step_timer, step_cb, 350, 0);	/* backoff is over */
+		timer_io->timer_start(timer_io, step_timer, 350);	/* backoff is over */
 		break;
 	case 1:
 		/* C: lazy reconnect; two calls queue behind one connection */
@@ -153,12 +154,12 @@ step_cb(uv_timer_t *t)
 		protobuf_c_grpc2_server_free(server);
 		server = NULL;
 		phase = 3;
-		uv_timer_start(&step_timer, step_cb, 150, 0);
+		timer_io->timer_start(timer_io, step_timer, 150);
 		break;
 	case 3:
 		start_server();		/* and comes back on the same port */
 		phase = 4;
-		uv_timer_start(&step_timer, step_cb, 50, 0);
+		timer_io->timer_start(timer_io, step_timer, 50);
 		break;
 	case 4:
 		/* D: reconnects at once: a lost working connection is not
@@ -174,7 +175,10 @@ step_cb(uv_timer_t *t)
 		client = NULL;
 		protobuf_c_grpc2_server_free(server);
 		server = NULL;
-		uv_close((uv_handle_t *) &step_timer, NULL);
+		timer_io->timer_free(timer_io, step_timer);
+		step_timer = NULL;
+		timer_io->destroy(timer_io);
+		timer_io = NULL;
 		phase = 6;
 		break;
 	}
@@ -198,7 +202,7 @@ free_test_call_done(const ProtobufCMethodDescriptor *m, int status,
 static void
 test_free_while_connecting(void)
 {
-	uv_loop_t *l = uv_loop_new();
+	TestLoop *l = test_loop_new();
 	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	ProtobufCGrpc2Client *c;
 	ProtobufCService *s;
@@ -207,7 +211,7 @@ test_free_while_connecting(void)
 
 	co.host = "localhost";
 	co.port = 1;
-	co.io = protobuf_c_grpc2_io_system_new_uv(l);
+	co.io = test_loop_new_io(l);
 	co.on_call_done = free_test_call_done;
 	c = protobuf_c_grpc2_client_new(&co);
 	assert(c != NULL);
@@ -215,11 +219,10 @@ test_free_while_connecting(void)
 	req.name = "x";
 	example__greeter__say_hello(s, &req, on_reply, NULL);	/* starts connecting */
 	protobuf_c_grpc2_client_free(c);	/* ... which is cancelled */
-	uv_run(l, UV_RUN_DEFAULT);
+	test_loop_run(l);
 	assert(free_test_done == 1 && free_test_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
-	rv = uv_loop_close(l);
+	rv = test_loop_close(l);
 	assert(rv == 0);
-	free(l);
 	puts("client: free while connecting ok");
 }
 
@@ -232,11 +235,11 @@ main(void)
 	greeter = (Example__Greeter_Service) EXAMPLE__GREETER__INIT(greeter_);
 	test_free_while_connecting();
 	port = 20000 + ((unsigned) getpid() * 7 + 3) % 20000;
-	loop = uv_loop_new();
+	loop = test_loop_new();
 
 	co.host = "127.0.0.1";
 	co.port = port;
-	co.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	co.io = test_loop_new_io(loop);
 	co.initial_backoff_ms = 100;
 	co.max_backoff_ms = 200;
 	co.on_call_done = on_call_done;
@@ -246,14 +249,17 @@ main(void)
 						  &example__greeter__descriptor);
 	assert(svc != NULL);
 
-	uv_timer_init(loop, &step_timer);
+	timer_io = test_loop_new_io(loop);
+	timer_io->ref(timer_io);	/* claims the creation ref */
+	assert(timer_io != NULL);
+	step_timer = timer_io->timer_new(timer_io, step_cb, NULL);
+	assert(step_timer != NULL);
 	say("a");			/* starts connecting, which will fail */
-	uv_run(loop, UV_RUN_DEFAULT);
+	test_loop_run(loop);
 
 	assert(phase == 6 && client == NULL && server == NULL);
-	rv = uv_loop_close(loop);
+	rv = test_loop_close(loop);
 	assert(rv == 0);
-	free(loop);
-	puts("client: ok");
+	printf("client[%s]: ok\n", test_backend_name());
 	return 0;
 }

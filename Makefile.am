@@ -15,9 +15,10 @@ grpc2includedir = $(includedir)/protobuf-c-grpc2
 
 EXTRA_DIST = CMakeLists.txt \
 	libprotobuf-c-grpc2.pc.in libprotobuf-c-grpc2-uv.pc.in \
-	libprotobuf-c-grpc2-openssl.pc.in \
+	libprotobuf-c-grpc2-openssl.pc.in libprotobuf-c-grpc2-poll.pc.in \
 	protobuf-c-grpc2/protobuf-c-grpc2-internal.h \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
+	t/bulk.c t/poll.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh
 
@@ -44,6 +45,16 @@ libprotobuf_c_grpc2_uv_la_LIBADD = libprotobuf-c-grpc2.la $(LIBUV_LIBS)
 libprotobuf_c_grpc2_uv_la_LDFLAGS = -version-info 0:0:0 -no-undefined
 grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-uv.h
 pkgconfig_DATA += libprotobuf-c-grpc2-uv.pc
+endif
+
+# ---- poll(2) adapter ----
+if WITH_POLL
+lib_LTLIBRARIES += libprotobuf-c-grpc2-poll.la
+libprotobuf_c_grpc2_poll_la_SOURCES = poll/protobuf-c-grpc2-poll.c
+libprotobuf_c_grpc2_poll_la_LIBADD = libprotobuf-c-grpc2.la
+libprotobuf_c_grpc2_poll_la_LDFLAGS = -version-info 0:0:0 -no-undefined
+grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-poll.h
+pkgconfig_DATA += libprotobuf-c-grpc2-poll.pc
 endif
 
 # ---- OpenSSL adapter ----
@@ -77,22 +88,52 @@ BUILT_SOURCES += t/loopback.pb-c.c t/loopback.pb-c.h
 CLEANFILES += t/loopback.pb-c.c t/loopback.pb-c.h
 endif
 
-# examples/greeter.pb-c.[ch] is shared by the endpoints test and the examples.
+# examples/greeter.pb-c.[ch] is shared by the endpoint tests and the examples.
+# The endpoint, bulk and client tests run once per I/O backend: the same
+# sources, linked with t/loop-backend-<name>.c.
+if BUILD_UV_TESTS
+check_PROGRAMS += t/test-client-uv t/test-bulk-uv
+TESTS += t/test-client-uv t/test-bulk-uv
+t_test_client_uv_SOURCES = t/client.c t/loop-backend-uv.c
+nodist_t_test_client_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_client_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_client_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+t_test_bulk_uv_SOURCES = t/bulk.c t/loop-backend-uv.c
+nodist_t_test_bulk_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_bulk_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_bulk_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+endif
 if BUILD_ENDPOINTS_TEST
-check_PROGRAMS += t/test-endpoints
-TESTS += t/test-endpoints
-t_test_endpoints_SOURCES = t/endpoints.c
-nodist_t_test_endpoints_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
-t_test_endpoints_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(builddir)/examples
-t_test_endpoints_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
+check_PROGRAMS += t/test-endpoints-uv
+TESTS += t/test-endpoints-uv
+t_test_endpoints_uv_SOURCES = t/endpoints.c t/loop-backend-uv.c
+nodist_t_test_endpoints_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
 	libprotobuf-c-grpc2.la $(LIBUV_LIBS) $(OPENSSL_LIBS)
-
-check_PROGRAMS += t/test-client
-TESTS += t/test-client
-t_test_client_SOURCES = t/client.c
-nodist_t_test_client_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
-t_test_client_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(builddir)/examples
-t_test_client_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+endif
+if BUILD_POLL_TESTS
+check_PROGRAMS += t/test-poll t/test-client-poll t/test-bulk-poll
+TESTS += t/test-poll t/test-client-poll t/test-bulk-poll
+t_test_poll_SOURCES = t/poll.c
+t_test_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+t_test_client_poll_SOURCES = t/client.c t/loop-backend-poll.c
+nodist_t_test_client_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_client_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_client_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+t_test_bulk_poll_SOURCES = t/bulk.c t/loop-backend-poll.c
+nodist_t_test_bulk_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_bulk_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_bulk_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+endif
+if BUILD_POLL_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-poll
+TESTS += t/test-endpoints-poll
+t_test_endpoints_poll_SOURCES = t/endpoints.c t/loop-backend-poll.c
+nodist_t_test_endpoints_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_poll_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(OPENSSL_LIBS)
 endif
 
 # ---- examples ----
@@ -122,10 +163,14 @@ endif
 examples/greeter.pb-c.c examples/greeter.pb-c.h: $(top_srcdir)/examples/greeter.proto
 	$(AM_V_GEN)$(MKDIR_P) examples && $(PROTOC) --plugin=protoc-gen-c=$(PROTOC_GEN_C) -I$(top_srcdir)/examples --c_out=$(top_builddir)/examples $(top_srcdir)/examples/greeter.proto
 CLEANFILES += examples/greeter.pb-c.c examples/greeter.pb-c.h
-if BUILD_ENDPOINTS_TEST
+if BUILD_UV_TESTS
+BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+else
+if BUILD_POLL_TESTS
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
 else
 if BUILD_EXAMPLES
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+endif
 endif
 endif

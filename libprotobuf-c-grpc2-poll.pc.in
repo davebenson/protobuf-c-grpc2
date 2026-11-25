@@ -1,0 +1,11 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: libprotobuf-c-grpc2-poll
+Description: poll(2) I/O system for protobuf-c-grpc2
+Version: @VERSION@
+Requires: libprotobuf-c-grpc2
+Libs: -L${libdir} -lprotobuf-c-grpc2-poll
+Cflags: -I${includedir}

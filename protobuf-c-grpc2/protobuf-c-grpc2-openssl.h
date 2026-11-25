@@ -14,7 +14,9 @@ extern "C" {
 #endif
 
 /**
- * A secure transport system whose sessions are created from `ctx`. The
+ * A secure transport system whose sessions are created from `ctx`. It is
+ * created floating: the first server or client to take it claims the creation
+ * reference, and further ones share it. The
  * reference count of `ctx` is incremented, so the caller may free its own
  * reference.
  *
