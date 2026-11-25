@@ -93,11 +93,11 @@ start_calls(void)
 	in = example__greeter__collect(greeter, NULL, on_reply, "Collect");
 	for (i = 0; in != NULL && i < sizeof friends / sizeof friends[0]; i++) {
 		req.name = (char *) friends[i];
-		in->vtable->send_input(in, &req.base);
+		example__greeter__collect__send(in, &req);
 	}
 	if (in != NULL) {
-		in->vtable->send_input(in, NULL);	/* end of requests */
-		in->vtable->destroy(in);
+		protobuf_c_input_stream_end(in);	/* end of requests */
+		protobuf_c_input_stream_destroy(in);
 	}
 }
 

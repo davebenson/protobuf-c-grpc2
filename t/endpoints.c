@@ -103,6 +103,7 @@ greeter_collect(Example__Greeter_Service *s, const Example__HelloRequest *first,
 	SumStream *ss = calloc(1, sizeof(*ss));
 	(void) s;
 	ss->base.vtable = &sum_vtable;
+	ss->base.input_descriptor = &example__hello_request__descriptor;
 	ss->cl = cl;
 	ss->d = d;
 	if (first != NULL)

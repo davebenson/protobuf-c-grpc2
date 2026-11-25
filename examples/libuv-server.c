@@ -145,6 +145,7 @@ greeter_collect(Example__Greeter_Service *service, const Example__HelloRequest *
 	(void) service;
 
 	cs->base.vtable = &collect_vtable;
+	cs->base.input_descriptor = &example__hello_request__descriptor;
 	cs->closure = closure;
 	cs->closure_data = closure_data;
 	if (first != NULL)			/* the optional first message */

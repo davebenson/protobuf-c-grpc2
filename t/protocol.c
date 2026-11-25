@@ -68,6 +68,7 @@ impl_hold(Loopback__Counter_Service *s, const Loopback__Req *in,
 	ProtobufCInputStream *st = calloc(1, sizeof(*st));
 	(void) s; (void) in; (void) cl; (void) d;
 	st->vtable = &null_vtable;
+	st->input_descriptor = &loopback__req__descriptor;
 	return st;
 }
 

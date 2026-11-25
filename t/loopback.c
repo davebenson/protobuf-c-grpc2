@@ -86,6 +86,7 @@ new_server_stream(const Loopback__Req *in, ProtobufCClosure cl, void *d, int ech
 {
 	ServerStream *ss = calloc(1, sizeof(*ss));
 	ss->base.vtable = &ss_vtable;
+	ss->base.input_descriptor = &loopback__req__descriptor;
 	ss->closure = cl;
 	ss->closure_data = d;
 	ss->echo = echo;

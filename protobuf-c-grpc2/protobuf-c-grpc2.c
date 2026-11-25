@@ -1032,6 +1032,7 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 			return NULL;
 		}
 		sink->base.vtable = &client_sink_vtable;
+		sink->base.input_descriptor = m->input;
 		sink->call = c;
 		c->refs++;
 		return &sink->base;
