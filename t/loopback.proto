@@ -13,4 +13,5 @@ service Counter {
   rpc Fail(Req) returns (Rsp);
   rpc Hold(stream Req) returns (stream Rsp);
   rpc Reject(stream Req) returns (Rsp);
+  rpc Early(stream Req) returns (stream Rsp);
 }

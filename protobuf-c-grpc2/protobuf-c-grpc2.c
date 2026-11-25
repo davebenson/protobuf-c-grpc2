@@ -98,6 +98,8 @@ struct Call {
 	ProtobufCMessage *request;	/* held until the request half-closes */
 	int closure_ref;		/* holds a reference for the closure */
 	ProtobufCInputStream *sink;	/* input stream from the handler */
+	int in_sink_send;		/* inside sink->send(msg) */
+	int sink_end_pending;		/* end it when that returns */
 
 	/* client side */
 	ProtobufCClosure closure;
@@ -565,6 +567,25 @@ server_http_error(Call *c, int http_status)
 					     NULL);
 }
 
+/* Tell the handler's input stream that its input is over (normally, or
+ * because the call is). Ending releases the stream. From inside the stream's
+ * own send(msg) the end is deferred until that returns, so that a handler
+ * that responds to a message never has its stream ended under its feet. */
+static void
+server_end_sink(Call *c)
+{
+	ProtobufCInputStream *s = c->sink;
+
+	if (s == NULL)
+		return;
+	if (c->in_sink_send) {
+		c->sink_end_pending = 1;
+		return;
+	}
+	c->sink = NULL;
+	s->send(s, NULL);
+}
+
 static void
 server_finish(Call *c, int status, const char *message)
 {
@@ -576,11 +597,7 @@ server_finish(Call *c, int status, const char *message)
 	if (c->done || c->conn == NULL)
 		return;
 	c->done = 1;
-	if (c->sink != NULL) {
-		ProtobufCInputStream *s = c->sink;
-		c->sink = NULL;
-		s->vtable->destroy(s);
-	}
+	server_end_sink(c);
 	if (c->stream_gone)
 		return;
 
@@ -671,9 +688,20 @@ server_on_message(Call *c, const uint8_t *data, size_t len)
 	if (msg == NULL)
 		return PROTOBUF_C_GRPC2_INTERNAL;	/* request parse failure */
 	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
-		if (c->sink != NULL && !c->sink->vtable->send_input(c->sink, msg)) {
-			protobuf_c_message_free_unpacked(msg, NULL);
-			return PROTOBUF_C_GRPC2_INTERNAL;
+		if (c->sink != NULL) {
+			protobuf_c_boolean ok;
+
+			c->in_sink_send++;
+			ok = c->sink->send(c->sink, msg);
+			c->in_sink_send--;
+			if (c->in_sink_send == 0 && c->sink_end_pending) {
+				c->sink_end_pending = 0;
+				server_end_sink(c);
+			}
+			if (!ok) {
+				protobuf_c_message_free_unpacked(msg, NULL);
+				return PROTOBUF_C_GRPC2_INTERNAL;
+			}
 		}
 	} else if (c->got_request) {
 		/* request cardinality violation */
@@ -703,16 +731,9 @@ server_on_remote_end(Call *c)
 		return;
 	}
 	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
-		if (c->sink != NULL) {
-			ProtobufCInputStream *s = c->sink;
-			/* Keep c->sink set: the handler may respond (and so
-			 * finish the call) from inside send_input(). */
-			s->vtable->send_input(s, NULL);
-			if (c->sink == s) {
-				c->sink = NULL;
-				s->vtable->destroy(s);
-			}
-		}
+		/* The stream is detached before it is ended, so the handler
+		 * may respond (and so finish the call) from inside send(). */
+		server_end_sink(c);
 	} else if (!c->got_request) {
 		server_finish(c, PROTOBUF_C_GRPC2_UNIMPLEMENTED, "missing request");
 	} else {
@@ -895,39 +916,27 @@ client_finish_from_trailers(Call *c)
 	}
 }
 
-/* The ProtobufCInputStream of a client call. */
+/* The ProtobufCInputStream of a client call. send(NULL) ends the request
+ * stream (half-closes the call) and releases the stream object. */
 static protobuf_c_boolean
-client_sink_send_input(ProtobufCInputStream *s, const ProtobufCMessage *msg)
+client_sink_send(ProtobufCInputStream *s, const ProtobufCMessage *msg)
 {
 	Call *c = ((ClientSink *) s)->call;
+	int ok = 0;
 
-	if (c->conn == NULL || c->stream_gone || c->out_finished || c->done)
-		return 0;
-	if (msg == NULL) {
-		call_finish_output(c);
-		return 1;
+	if (msg != NULL) {
+		if (c->conn == NULL || c->stream_gone || c->out_finished || c->done)
+			return 0;
+		return call_queue_message(c, msg) == 0;
 	}
-	return call_queue_message(c, msg) == 0;
-}
-
-static void
-client_sink_destroy(ProtobufCInputStream *s)
-{
-	Call *c = ((ClientSink *) s)->call;
-
-	if (!c->out_finished && c->conn != NULL && !c->stream_gone) {
-		/* not ended by the caller: cancel the call */
-		nghttp2_conn_shutdown_stream(c->conn->ng, 0, c->stream_id,
-					     HTTP2_CANCEL);
+	if (c->conn != NULL && !c->stream_gone && !c->out_finished && !c->done) {
+		call_finish_output(c);
+		ok = 1;
 	}
 	free(s);
 	call_unref(c);
+	return ok;
 }
-
-static const ProtobufCInputStreamVTable client_sink_vtable = {
-	client_sink_send_input,
-	client_sink_destroy
-};
 
 static ProtobufCInputStream *
 client_invoke(ProtobufCService *service, unsigned index_and_flags,
@@ -1031,7 +1040,7 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 			nghttp2_conn_shutdown_stream(conn->ng, 0, sid, HTTP2_CANCEL);
 			return NULL;
 		}
-		sink->base.vtable = &client_sink_vtable;
+		sink->base.send = client_sink_send;
 		sink->base.input_descriptor = m->input;
 		sink->call = c;
 		c->refs++;
@@ -1262,11 +1271,7 @@ stream_close_cb(nghttp2_conn *ng, uint32_t flags, int64_t stream_id,
 			c->done = 1;
 			call_report_done(c, PROTOBUF_C_GRPC2_CANCELLED, "stream closed");
 		}
-		if (c->sink != NULL) {
-			ProtobufCInputStream *s = c->sink;
-			c->sink = NULL;
-			s->vtable->destroy(s);
-		}
+		server_end_sink(c);
 		/* No more responses can be sent; drop the closure reference
 		 * only when the handler has completed (see server_closure). */
 	} else if (!c->done) {
@@ -1384,11 +1389,7 @@ protobuf_c_grpc2_conn_free(ProtobufCGrpc2Conn *conn)
 		int stream_ref = !c->stream_gone;	/* else already dropped */
 		c->stream_gone = 1;
 		if (c->is_server) {
-			if (c->sink != NULL) {
-				ProtobufCInputStream *s = c->sink;
-				c->sink = NULL;
-				s->vtable->destroy(s);
-			}
+			server_end_sink(c);
 			if (!c->done) {
 				c->done = 1;
 				call_report_done(c, PROTOBUF_C_GRPC2_CANCELLED,

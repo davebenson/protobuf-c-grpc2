@@ -140,13 +140,15 @@ typedef struct {
 	void *closure_data;
 } EchoStream;
 
+/* A NULL message is the end of the request stream: it releases the stream. */
 static protobuf_c_boolean
-echo_send_input(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
+echo_send(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
 {
 	EchoStream *es = (EchoStream *) stream;
 
 	if (msg == NULL) {
 		es->closure(NULL, es->closure_data);	/* end of responses */
+		free(es);
 	} else {
 		const Stress__Req *req = (const Stress__Req *) msg;
 		Stress__Rsp rsp = STRESS__RSP__INIT;
@@ -158,16 +160,6 @@ echo_send_input(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
 	return 1;
 }
 
-static void
-echo_destroy(ProtobufCInputStream *stream)
-{
-	free(stream);
-}
-
-static const ProtobufCInputStreamVTable echo_vtable = {
-	echo_send_input, echo_destroy
-};
-
 static ProtobufCInputStream *
 stress_echo(Stress__Stress_Service *s, const Stress__Req *first,
 	    Stress__Rsp_Closure closure, void *d)
@@ -176,12 +168,12 @@ stress_echo(Stress__Stress_Service *s, const Stress__Req *first,
 	(void) s;
 
 	assert(es != NULL);
-	es->base.vtable = &echo_vtable;
+	es->base.send = echo_send;
 	es->base.input_descriptor = &stress__req__descriptor;
 	es->closure = closure;
 	es->closure_data = d;
 	if (first != NULL)
-		echo_send_input(&es->base, &first->base);
+		echo_send(&es->base, &first->base);
 	return &es->base;
 }
 
@@ -306,8 +298,7 @@ start_one(void)
 			if (stress__req__input_stream__send(in, &req))
 				replies_expected++;
 		}
-		stress__req__input_stream__end(in);
-		stress__req__input_stream__destroy(in);
+		stress__req__input_stream__send(in, NULL);	/* the end */
 		break;
 	}
 	}

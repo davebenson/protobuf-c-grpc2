@@ -100,8 +100,9 @@ typedef struct {
 	void *closure_data;
 } CollectStream;
 
+/* A NULL message is the end of the request stream: it releases the stream. */
 static protobuf_c_boolean
-collect_send_input(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
+collect_send(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
 {
 	CollectStream *cs = (CollectStream *) stream;
 
@@ -120,22 +121,11 @@ collect_send_input(ProtobufCInputStream *stream, const ProtobufCMessage *msg)
 			 cs->names ? cs->names : "nobody");
 		reply.message = text;
 		cs->closure(&reply, cs->closure_data);
+		free(cs->names);
+		free(cs);
 	}
 	return 1;
 }
-
-static void
-collect_destroy(ProtobufCInputStream *stream)
-{
-	CollectStream *cs = (CollectStream *) stream;
-	free(cs->names);
-	free(cs);
-}
-
-static const ProtobufCInputStreamVTable collect_vtable = {
-	collect_send_input,
-	collect_destroy
-};
 
 static ProtobufCInputStream *
 greeter_collect(Example__Greeter_Service *service, const Example__HelloRequest *first,
@@ -144,12 +134,12 @@ greeter_collect(Example__Greeter_Service *service, const Example__HelloRequest *
 	CollectStream *cs = calloc(1, sizeof(*cs));
 	(void) service;
 
-	cs->base.vtable = &collect_vtable;
+	cs->base.send = collect_send;
 	cs->base.input_descriptor = &example__hello_request__descriptor;
 	cs->closure = closure;
 	cs->closure_data = closure_data;
 	if (first != NULL)			/* the optional first message */
-		collect_send_input(&cs->base, &first->base);
+		collect_send(&cs->base, &first->base);
 	return &cs->base;
 }
 

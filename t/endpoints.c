@@ -84,17 +84,10 @@ sum_send(ProtobufCInputStream *st, const ProtobufCMessage *m)
 		snprintf(text, sizeof text, "total=%d", ss->total);
 		reply.message = text;
 		ss->cl(&reply, ss->d);
+		free(ss);		/* the end of the stream releases it */
 	}
 	return 1;
 }
-
-static void
-sum_destroy(ProtobufCInputStream *st)
-{
-	free(st);
-}
-
-static const ProtobufCInputStreamVTable sum_vtable = { sum_send, sum_destroy };
 
 static ProtobufCInputStream *
 greeter_collect(Example__Greeter_Service *s, const Example__HelloRequest *first,
@@ -102,7 +95,7 @@ greeter_collect(Example__Greeter_Service *s, const Example__HelloRequest *first,
 {
 	SumStream *ss = calloc(1, sizeof(*ss));
 	(void) s;
-	ss->base.vtable = &sum_vtable;
+	ss->base.send = sum_send;
 	ss->base.input_descriptor = &example__hello_request__descriptor;
 	ss->cl = cl;
 	ss->d = d;
@@ -230,8 +223,7 @@ start_calls(void)
 		req.count = i;
 		example__hello_request__input_stream__send(in, &req);
 	}
-	example__hello_request__input_stream__end(in);
-	example__hello_request__input_stream__destroy(in);
+	example__hello_request__input_stream__send(in, NULL);	/* the end */
 
 	/* a call that the server never answers, with a 150 ms deadline: the
 	 * server's own timer (set up by the builder) must end it */

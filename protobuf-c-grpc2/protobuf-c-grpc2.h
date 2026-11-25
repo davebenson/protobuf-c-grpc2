@@ -140,13 +140,13 @@ ProtobufCGrpc2Conn *protobuf_c_grpc2_conn_client_new(const ProtobufCGrpc2ConnOpt
 
 /**
  * Free a connection. Pending client calls are completed with
- * PROTOBUF_C_GRPC2_UNAVAILABLE and pending server input streams are destroyed. A server
+ * PROTOBUF_C_GRPC2_UNAVAILABLE and pending server input streams are ended. A server
  * handler that still holds a response closure may keep calling it; the calls
  * are ignored, and the final one (NULL message, or the first response of a
  * non-output-streaming method) releases the call's memory. Handlers that
  * never finish their closure leak that memory.
  * ProtobufCInputStream objects still held by the application stay valid
- * (sending on them fails) until the application destroys them.
+ * (sending on them fails) until the application ends them.
  */
 void protobuf_c_grpc2_conn_free(ProtobufCGrpc2Conn *conn);
 
@@ -205,8 +205,8 @@ int protobuf_c_grpc2_client_service_set_timeout_ms(ProtobufCService *service,
  * Get a client-side ProtobufCService for the given service descriptor. Use
  * it with the generated caller functions, or with its `invoke` directly.
  * Streaming flags in the method index are honoured; for a method with
- * INPUT_STREAMING the returned ProtobufCInputStream must be ended
- * (send_input(NULL)) and destroyed by the caller. NULL is returned (and the
+ * INPUT_STREAMING the returned ProtobufCInputStream must be ended, with
+ * send(NULL), by the caller; that also releases it. NULL is returned (and the
  * closure is called with NULL) if the call cannot be started.
  *
  * The service is owned by the connection and is freed with it; calling

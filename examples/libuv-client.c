@@ -96,8 +96,8 @@ start_calls(void)
 		example__hello_request__input_stream__send(in, &req);
 	}
 	if (in != NULL) {
-		example__hello_request__input_stream__end(in);	/* end of requests */
-		example__hello_request__input_stream__destroy(in);
+		/* end of requests; this also releases the stream */
+		example__hello_request__input_stream__send(in, NULL);
 	}
 }
 

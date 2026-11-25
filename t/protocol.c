@@ -45,21 +45,16 @@ impl_unary(Loopback__Counter_Service *s, const Loopback__Req *in,
 /* Hold: accepts a request stream and never answers; counts its releases. */
 static int sinks_destroyed;
 
+/* NULL ends the stream, and releases it. */
 static protobuf_c_boolean
 null_send(ProtobufCInputStream *st, const ProtobufCMessage *m)
 {
-	(void) st; (void) m;
+	if (m == NULL) {
+		sinks_destroyed++;
+		free(st);
+	}
 	return 1;
 }
-
-static void
-null_destroy(ProtobufCInputStream *st)
-{
-	sinks_destroyed++;
-	free(st);
-}
-
-static const ProtobufCInputStreamVTable null_vtable = { null_send, null_destroy };
 
 static ProtobufCInputStream *
 impl_hold(Loopback__Counter_Service *s, const Loopback__Req *in,
@@ -67,7 +62,7 @@ impl_hold(Loopback__Counter_Service *s, const Loopback__Req *in,
 {
 	ProtobufCInputStream *st = calloc(1, sizeof(*st));
 	(void) s; (void) in; (void) cl; (void) d;
-	st->vtable = &null_vtable;
+	st->send = null_send;
 	st->input_descriptor = &loopback__req__descriptor;
 	return st;
 }
