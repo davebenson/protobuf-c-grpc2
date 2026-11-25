@@ -75,7 +75,7 @@ start_calls(void)
 	Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
 	ProtobufCService *greeter = protobuf_c_grpc2_client_get_service(
 		client, &example__greeter__descriptor);
-	ProtobufCInputStream *in;
+	Example__HelloRequest__InputStream *in;
 	static const char *const friends[] = { "alice", "bob", "carol" };
 	size_t i;
 
@@ -93,11 +93,11 @@ start_calls(void)
 	in = example__greeter__collect(greeter, NULL, on_reply, "Collect");
 	for (i = 0; in != NULL && i < sizeof friends / sizeof friends[0]; i++) {
 		req.name = (char *) friends[i];
-		example__greeter__collect__send(in, &req);
+		example__hello_request__input_stream__send(in, &req);
 	}
 	if (in != NULL) {
-		protobuf_c_input_stream_end(in);	/* end of requests */
-		protobuf_c_input_stream_destroy(in);
+		example__hello_request__input_stream__end(in);	/* end of requests */
+		example__hello_request__input_stream__destroy(in);
 	}
 }
 

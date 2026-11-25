@@ -169,9 +169,10 @@ You can also own the sockets yourself:
 Streaming methods use `ProtobufCService::invoke` as documented in
 `protobuf-c.h`: `PROTOBUF_C_OUTPUT_STREAMING` calls deliver many responses and
 a final NULL; `PROTOBUF_C_INPUT_STREAMING` calls return a
-`ProtobufCInputStream` on which the caller sends requests (with the generated
-`<service>__<method>__send()` or `protobuf_c_input_stream_send()`, which check
-the message type) and ends the stream with `protobuf_c_input_stream_end()`.
+typed stream, `<Request>__InputStream`, on which the caller sends requests with
+the generated `<request>__input_stream__send()` and ends the stream with
+`__end()` and `__destroy()` (or the generic `protobuf_c_input_stream_*`
+functions on its `base` member, which check the message type at run time).
 Stream implementations set `input_descriptor` to the request type. Errors are reported through the
 `on_call_done` option.
 

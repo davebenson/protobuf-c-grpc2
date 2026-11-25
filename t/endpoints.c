@@ -216,7 +216,7 @@ start_calls(void)
 {
 	ProtobufCService *svc2;
 	Example__HelloRequest req = EXAMPLE__HELLO_REQUEST__INIT;
-	ProtobufCInputStream *in;
+	Example__HelloRequest__InputStream *in;
 	int i;
 
 	pending = 4;
@@ -228,10 +228,10 @@ start_calls(void)
 	assert(in != NULL);
 	for (i = 1; i <= 4; i++) {
 		req.count = i;
-		in->vtable->send_input(in, &req.base);
+		example__hello_request__input_stream__send(in, &req);
 	}
-	in->vtable->send_input(in, NULL);
-	in->vtable->destroy(in);
+	example__hello_request__input_stream__end(in);
+	example__hello_request__input_stream__destroy(in);
 
 	/* a call that the server never answers, with a 150 ms deadline: the
 	 * server's own timer (set up by the builder) must end it */

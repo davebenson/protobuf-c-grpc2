@@ -254,7 +254,7 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	ProtobufCGrpc2Conn *cc2, *sc2;
 	ProtobufCService *client2;
 	Loopback__Req req = LOOPBACK__REQ__INIT;
-	ProtobufCInputStream *in;
+	Loopback__Req__InputStream *in;
 	Loopback__Rsp late = LOOPBACK__RSP__INIT;
 	int destroyed_before;
 
@@ -273,13 +273,13 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	reset();
 	in = loopback__counter__up(client2, NULL, on_rsp, NULL);
 	req.n = 5;
-	assert(in->vtable->send_input(in, &req.base));
+	assert(loopback__req__input_stream__send(in, &req));
 	pump(cc2, sc2);
 	protobuf_c_grpc2_conn_free(cc2);
 	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
-	assert(!in->vtable->send_input(in, &req.base));	/* conn is gone */
-	assert(!in->vtable->send_input(in, NULL));
-	in->vtable->destroy(in);			/* must be safe */
+	assert(!loopback__req__input_stream__send(in, &req));	/* conn is gone */
+	assert(!loopback__req__input_stream__end(in));
+	loopback__req__input_stream__destroy(in);			/* must be safe */
 	destroyed_before = server_streams_destroyed;
 	protobuf_c_grpc2_conn_free(sc2);	/* destroys the server's input stream */
 	assert(server_streams_destroyed == destroyed_before + 1);
@@ -291,7 +291,7 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	destroyed_before = server_streams_destroyed;
 	in = loopback__counter__both(client2, NULL, on_rsp, NULL);
 	req.n = 1;
-	in->vtable->send_input(in, &req.base);
+	loopback__req__input_stream__send(in, &req);
 	pump(cc2, sc2);
 	assert(rsp_count == 1);
 	protobuf_c_grpc2_conn_free(sc2);
@@ -301,7 +301,7 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	 * just free it, which completes the call */
 	protobuf_c_grpc2_conn_free(cc2);
 	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_UNAVAILABLE);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	puts("teardown: server freed, bidi in flight ok");
 
 	/* 4. client cancels by destroying an unfinished input stream */
@@ -309,10 +309,10 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	destroyed_before = server_streams_destroyed;
 	in = loopback__counter__both(client, NULL, on_rsp, NULL);
 	req.n = 3;
-	in->vtable->send_input(in, &req.base);
+	loopback__req__input_stream__send(in, &req);
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 30);
-	in->vtable->destroy(in);			/* not ended: cancels */
+	loopback__req__input_stream__destroy(in);			/* not ended: cancels */
 	pump(cc, sc);
 	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_CANCELLED);
 	assert(server_streams_destroyed == destroyed_before + 1);
@@ -326,7 +326,7 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	in = loopback__counter__hold(client, NULL, on_rsp, NULL);
 	pump(cc, sc);
 	assert(held_closure != NULL);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	pump(cc, sc);
 	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_CANCELLED);
 	late.n = 99;
@@ -344,10 +344,10 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	pump(cc, sc);
 	assert(rsp_end == 1 && rsp_count == 0 && last_status == PROTOBUF_C_GRPC2_UNKNOWN);
 	req.n = 1;
-	in->vtable->send_input(in, &req.base);	/* may or may not be accepted */
+	loopback__req__input_stream__send(in, &req);	/* may or may not be accepted */
 	pump(cc, sc);
-	assert(!in->vtable->send_input(in, &req.base));
-	in->vtable->destroy(in);
+	assert(!loopback__req__input_stream__send(in, &req));
+	loopback__req__input_stream__destroy(in);
 	pump(cc, sc);
 	assert(server_streams_destroyed == destroyed_before + 1);
 	assert(rsp_end == 1);			/* closure not called again */
@@ -366,7 +366,7 @@ test_teardown_and_cancel(ProtobufCGrpc2Server *server, const ProtobufCGrpc2ConnO
 	held_closure(&late.base, held_closure_data);	/* ignored */
 	held_closure(NULL, held_closure_data);		/* final: releases */
 	protobuf_c_grpc2_conn_free(cc2);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	puts("teardown: stale closure after server freed ok");
 
 	/* 8. cancelling an output-streaming call is by destroying the conn
@@ -389,7 +389,7 @@ main(void)
 	ProtobufCGrpc2Conn *cc, *sc;
 	ProtobufCService *client;
 	Loopback__Req req = LOOPBACK__REQ__INIT;
-	ProtobufCInputStream *in;
+	Loopback__Req__InputStream *in;
 	int i;
 
 	copts = (ProtobufCGrpc2ConnOptions) PROTOBUF_C_GRPC2_CONN_OPTIONS_INIT;
@@ -433,15 +433,15 @@ main(void)
 	assert(in != NULL);
 	for (i = 1; i <= 3; i++) {
 		req.n = i;
-		assert(in->vtable->send_input(in, &req.base));
+		assert(loopback__req__input_stream__send(in, &req));
 	}
 	pump(cc, sc);
 	assert(rsp_count == 0);
-	assert(in->vtable->send_input(in, NULL));
+	assert(loopback__req__input_stream__end(in));
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 6);
 	assert(last_status == PROTOBUF_C_GRPC2_OK);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	puts("client streaming ok");
 
 	/* client streaming; first message given to invoke */
@@ -449,28 +449,28 @@ main(void)
 	req.n = 100;
 	in = loopback__counter__up(client, &req, on_rsp, NULL);
 	req.n = 1;
-	in->vtable->send_input(in, &req.base);
-	in->vtable->send_input(in, NULL);
+	loopback__req__input_stream__send(in, &req);
+	loopback__req__input_stream__end(in);
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 101);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	puts("client streaming (first message) ok");
 
 	/* bidirectional: server answers while client is still sending */
 	reset();
 	in = loopback__counter__both(client, NULL, on_rsp, NULL);
 	req.n = 1;
-	in->vtable->send_input(in, &req.base);
+	loopback__req__input_stream__send(in, &req);
 	pump(cc, sc);
 	assert(rsp_count == 1 && rsp_n[0] == 10 && rsp_end == 0);
 	req.n = 2;
-	in->vtable->send_input(in, &req.base);
+	loopback__req__input_stream__send(in, &req);
 	pump(cc, sc);
 	assert(rsp_count == 2 && rsp_n[1] == 20 && rsp_end == 0);
-	in->vtable->send_input(in, NULL);
+	loopback__req__input_stream__end(in);
 	pump(cc, sc);
 	assert(rsp_end == 1 && last_status == PROTOBUF_C_GRPC2_OK);
-	in->vtable->destroy(in);
+	loopback__req__input_stream__destroy(in);
 	puts("bidirectional ok");
 
 	/* failure: closure gets NULL, status reported out of band */
