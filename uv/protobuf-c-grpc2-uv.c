@@ -7,6 +7,8 @@
 typedef struct {
 	ProtobufCGrpc2IoSystem base;	/* must be first */
 	uv_loop_t *loop;
+	int refs;
+	int floating;		/* the creation reference is not yet claimed */
 } UvIo;
 
 typedef struct {
@@ -422,9 +424,23 @@ uv_remove_hook_(ProtobufCGrpc2IoSystem *io, void *hook)
 }
 
 static void
+uv_ref_(ProtobufCGrpc2IoSystem *io)
+{
+	UvIo *u = (UvIo *) io;
+
+	/* like g_object_ref_sink(): the first reference claims the creation
+	 * reference instead of adding one */
+	if (u->floating)
+		u->floating = 0;
+	else
+		u->refs++;
+}
+
+static void
 uv_destroy_(ProtobufCGrpc2IoSystem *io)
 {
-	free(io);
+	if (--((UvIo *) io)->refs == 0)
+		free(io);
 }
 
 ProtobufCGrpc2IoSystem *
@@ -449,5 +465,8 @@ protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
 	io->base.add_iteration_hook = uv_add_hook_;
 	io->base.remove_iteration_hook = uv_remove_hook_;
 	io->base.destroy = uv_destroy_;
+	io->base.ref = uv_ref_;
+	io->refs = 1;
+	io->floating = 1;
 	return &io->base;
 }

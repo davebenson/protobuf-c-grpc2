@@ -116,6 +116,8 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 	c->connect_timeout_ms = o.connect_timeout_ms ? o.connect_timeout_ms
 		: DEFAULT_CONNECT_TIMEOUT_MS;
 	c->io = o.io;
+	if (c->io->ref != NULL)
+		c->io->ref(c->io);	/* else ownership is transferred */
 	c->sts = o.secure_transport;
 	c->state = C_IDLE;
 	return c;

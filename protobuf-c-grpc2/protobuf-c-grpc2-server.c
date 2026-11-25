@@ -141,6 +141,8 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 			return NULL;
 		}
 		server->io = o.io;
+		if (o.io->ref != NULL)
+			o.io->ref(o.io);	/* else ownership is transferred */
 		server->sts = o.secure_transport;
 	}
 	return server;

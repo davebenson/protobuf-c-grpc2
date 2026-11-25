@@ -13,8 +13,10 @@ extern "C" {
 #endif
 
 /**
- * An I/O system that runs on `loop`. Free it with its `destroy` member, or
- * pass it as the `io` option of a server or client (which then owns it). The loop must outlive it.
+ * An I/O system that runs on `loop`. It is created floating: the first
+ * server or client to take it claims the creation reference, and further ones
+ * share it. If you use it without one, call `ref` and later `destroy`.
+ * The loop must outlive it.
  */
 ProtobufCGrpc2IoSystem *protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop);
 

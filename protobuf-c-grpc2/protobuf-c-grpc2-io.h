@@ -123,9 +123,25 @@ struct ProtobufCGrpc2IoSystem {
 				    void (*hook)(void *), void *data);
 	void (*remove_iteration_hook)(ProtobufCGrpc2IoSystem *io, void *hook);
 
-	/** Optional. Called when the server that owns this system is freed,
-	 *  after all its streams are closed. */
+	/**
+	 * Optional. Release one reference to the system, freeing it when the
+	 * last one goes. Servers and clients call it when they are freed,
+	 * after all their streams are closed.
+	 */
 	void (*destroy)(ProtobufCGrpc2IoSystem *io);
+	/**
+	 * Optional. Take one more reference. Servers and clients call it
+	 * when they are created with the system as their `io` option, so a
+	 * system can be shared freely. A system with a `ref` member is
+	 * created "floating", as with g_object_ref_sink(): the first
+	 * call claims its creation reference instead of adding one, so the
+	 * creator never releases it, and a later call adds a reference. If
+	 * nothing ever takes it (a system used only directly, for timers,
+	 * say) the creator calls `ref` itself, and `destroy` when done. A
+	 * system without `ref` is instead owned by the first server or
+	 * client it is given to, which calls `destroy` on it.
+	 */
+	void (*ref)(ProtobufCGrpc2IoSystem *io);
 };
 
 /* ------------------------------------------------------------------ */
