@@ -49,6 +49,13 @@ AS_IF([test "x$with_dispatch" != xno],
                     [AC_MSG_NOTICE([protobuf-c-rpc has no prepare functions: not building the dispatch adapter])])])])
 AM_CONDITIONAL([WITH_DISPATCH], [test "$have_dispatch" = yes])
 
+# The GLib adapter needs GLib 2.36 (g_source_add_unix_fd).
+AC_ARG_WITH([glib], AS_HELP_STRING([--without-glib], [do not build the GLib main-loop adapter]))
+have_glib=no
+AS_IF([test "x$with_glib" != xno],
+      [PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.36], [have_glib=yes], [have_glib=no])])
+AM_CONDITIONAL([WITH_GLIB], [test "$have_glib" = yes])
+
 AC_ARG_WITH([openssl], AS_HELP_STRING([--without-openssl], [do not build the OpenSSL adapter]))
 have_openssl=no
 AS_IF([test "x$with_openssl" != xno],
@@ -80,6 +87,12 @@ AM_CONDITIONAL([BUILD_DISPATCH_TESTS],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes])
 AM_CONDITIONAL([BUILD_DISPATCH_ENDPOINTS_TEST],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes -a "$have_openssl" = yes])
+AM_CONDITIONAL([BUILD_GLIB_TESTS],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_glib" = yes])
+AM_CONDITIONAL([BUILD_GLIB_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_glib" = yes -a "$have_openssl" = yes])
+AM_CONDITIONAL([BUILD_GLIB_GNUTLS_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_glib" = yes -a "$have_gnutls" = yes])
 AM_CONDITIONAL([BUILD_GNUTLS_ENDPOINTS_TEST],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_gnutls" = yes -a "$have_uv" = yes])
 AM_CONDITIONAL([BUILD_POLL_GNUTLS_ENDPOINTS_TEST],
@@ -93,5 +106,5 @@ AM_CONDITIONAL([BUILD_EXAMPLES],
                [test "x$enable_examples" != xno -a "$have_uv" = yes -a -n "$PROTOC" -a -n "$PROTOC_GEN_C"])
 AM_CONDITIONAL([EXAMPLES_OPENSSL], [test "$have_openssl" = yes])
 
-AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-dispatch.pc libprotobuf-c-grpc2-openssl.pc libprotobuf-c-grpc2-gnutls.pc])
+AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-dispatch.pc libprotobuf-c-grpc2-glib.pc libprotobuf-c-grpc2-openssl.pc libprotobuf-c-grpc2-gnutls.pc])
 AC_OUTPUT

@@ -4,7 +4,8 @@
 # usage: smoke.sh [stress-binary ...]
 if [ $# -eq 0 ]; then
 	for b in ./stress/stress-uv ./stress/stress-poll \
-	    ./stress/stress-dispatch ./stress/stress-dispatch-embed; do
+	    ./stress/stress-dispatch ./stress/stress-dispatch-embed \
+	    ./stress/stress-glib; do
 		[ -x "$b" ] && set -- "$@" "$b"
 	done
 fi

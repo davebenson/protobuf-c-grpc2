@@ -20,7 +20,7 @@ supported.
 The libraries build against *installed* copies of these, so this package can
 be released and packaged separately from protobuf-c itself.
 
-It builds up to six libraries, each with its own pkg-config file and headers, so
+It builds up to seven libraries, each with its own pkg-config file and headers, so
 distributions can split it into separate packages:
 
 | library                     | needs            | provides |
@@ -29,12 +29,13 @@ distributions can split it into separate packages:
 | `protobuf-c-grpc2-uv`       | libuv            | a libuv I/O system |
 | `protobuf-c-grpc2-poll`     | POSIX            | a small poll(2) event loop and I/O system, for programs without an event loop of their own |
 | `protobuf-c-grpc2-dispatch` | protobuf-c-rpc (with prepare functions) | an I/O system on protobuf-c-rpc's `ProtobufCRPCDispatch`, to share a main-loop with protobuf-c-rpc services |
+| `protobuf-c-grpc2-glib`     | GLib >= 2.36     | an I/O system on a `GMainContext`, to run gRPC from a GLib or GTK main-loop |
 | `protobuf-c-grpc2-openssl`  | OpenSSL          | an OpenSSL secure transport |
 | `protobuf-c-grpc2-gnutls`   | GnuTLS           | a GnuTLS secure transport |
 
-`--without-uv` / `--without-poll` / `--without-dispatch` / `--without-openssl`
-/ `--without-gnutls` (or `-DWITH_UV=OFF` / `-DWITH_POLL=OFF` /
-`-DWITH_DISPATCH=OFF` / `-DWITH_OPENSSL=OFF` / `-DWITH_GNUTLS=OFF`) skip an adapter; they are otherwise built when found.
+`--without-uv` / `--without-poll` / `--without-dispatch` / `--without-glib` /
+`--without-openssl` / `--without-gnutls` (or `-DWITH_UV=OFF` / `-DWITH_POLL=OFF` /
+`-DWITH_DISPATCH=OFF` / `-DWITH_GLIB=OFF` / `-DWITH_OPENSSL=OFF` / `-DWITH_GNUTLS=OFF`) skip an adapter; they are otherwise built when found.
 
 ## Building
 
@@ -174,10 +175,29 @@ dispatch, and should call `protobuf_c_rpc_dispatch_run_prepares()` once before
 its first wait. Like the poll adapter it resolves host names with a blocking
 `getaddrinfo()`.
 
+### With GLib: the GLib adapter
+
+`protobuf-c-grpc2-glib.h` runs servers and clients on a `GMainContext`, so a
+GLib or GTK program serves and calls gRPC from its ordinary main-loop:
+
+    o.io = protobuf_c_grpc2_io_system_new_glib(NULL);   /* the default context */
+    ...
+    g_main_loop_run(loop);
+
+Sockets are `GSource`s with their descriptors added by `g_source_add_unix_fd()`,
+timers and deferred completions are sources too, and the core's iteration hook
+is a source whose `prepare` function runs at the start of every iteration. All
+callbacks arrive from the thread that iterates the context, never from inside a
+call into the library, and the I/O system, servers and clients must only be used
+from that thread. The I/O system holds a reference to the context. Like the
+poll and dispatch adapters it resolves host names with a blocking
+`getaddrinfo()`.
+
 The tests under `t/` that need an event loop (`endpoints`, `client`, `bulk`)
 run once on each backend, through the small shim in `t/loop-backend.h`; the
 dispatch adapter is tested both with `protobuf_c_rpc_dispatch_run()` and with
-an embedding loop of its own (`dispatch-embed`).
+an embedding loop of its own (`dispatch-embed`), and the GLib adapter on a
+context of its own that the test iterates step by step.
 The endpoint test (a server and a client, with and without TLS) also runs once
 per TLS library, through `t/tls-backend.h`, and `t/tls-interop.c` connects the
 OpenSSL and GnuTLS adapters to each other in every combination.
@@ -264,7 +284,7 @@ Stream implementations set `input_descriptor` to the request type. Errors are re
 keeps a fixed number of requests in flight and stops after a given number of
 them have been answered; the program prints throughput and latency and exits
 nonzero if any call failed or went missing. It is built once per I/O backend
-(`stress-uv`, `stress-poll`, `stress-dispatch`, `stress-dispatch-embed`) by CMake and by `make check`, which also runs a
+(`stress-uv`, `stress-poll`, `stress-dispatch`, `stress-dispatch-embed`, `stress-glib`) by CMake and by `make check`, which also runs a
 short run of every method (`stress/smoke.sh`).
 
     stress-poll -n 8 -p 50 -r 5000 -m mixed -d 1

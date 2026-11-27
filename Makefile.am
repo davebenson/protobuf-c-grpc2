@@ -17,10 +17,12 @@ EXTRA_DIST = CMakeLists.txt \
 	libprotobuf-c-grpc2.pc.in libprotobuf-c-grpc2-uv.pc.in \
 	libprotobuf-c-grpc2-openssl.pc.in libprotobuf-c-grpc2-poll.pc.in \
 	libprotobuf-c-grpc2-dispatch.pc.in libprotobuf-c-grpc2-gnutls.pc.in \
+	libprotobuf-c-grpc2-glib.pc.in \
 	protobuf-c-grpc2/protobuf-c-grpc2-internal.h \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
+	t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
 	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh \
@@ -70,6 +72,15 @@ libprotobuf_c_grpc2_dispatch_la_LIBADD = libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC
 libprotobuf_c_grpc2_dispatch_la_LDFLAGS = -version-info 0:0:0 -no-undefined
 grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-dispatch.h
 pkgconfig_DATA += libprotobuf-c-grpc2-dispatch.pc
+endif
+if WITH_GLIB
+lib_LTLIBRARIES += libprotobuf-c-grpc2-glib.la
+libprotobuf_c_grpc2_glib_la_SOURCES = glib/protobuf-c-grpc2-glib.c
+libprotobuf_c_grpc2_glib_la_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS)
+libprotobuf_c_grpc2_glib_la_LIBADD = libprotobuf-c-grpc2.la $(GLIB_LIBS)
+libprotobuf_c_grpc2_glib_la_LDFLAGS = -version-info 0:0:0 -no-undefined
+grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-glib.h
+pkgconfig_DATA += libprotobuf-c-grpc2-glib.pc
 endif
 
 # ---- OpenSSL adapter ----
@@ -202,6 +213,40 @@ t_test_endpoints_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libproto
 	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
 endif
 
+if BUILD_GLIB_TESTS
+check_PROGRAMS += t/test-glib t/test-client-glib t/test-bulk-glib
+TESTS += t/test-glib t/test-client-glib t/test-bulk-glib
+t_test_glib_SOURCES = t/glib.c
+t_test_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t
+t_test_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+t_test_client_glib_SOURCES = t/client.c t/loop-backend-glib.c
+nodist_t_test_client_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_client_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_client_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+t_test_bulk_glib_SOURCES = t/bulk.c t/loop-backend-glib.c
+nodist_t_test_bulk_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_bulk_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_bulk_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+endif
+if BUILD_GLIB_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-glib
+TESTS += t/test-endpoints-glib
+t_test_endpoints_glib_SOURCES = t/endpoints.c t/loop-backend-glib.c t/tls-backend-openssl.c
+nodist_t_test_endpoints_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(GLIB_LIBS) $(OPENSSL_LIBS)
+endif
+if BUILD_GLIB_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-glib-gnutls
+TESTS += t/test-endpoints-glib-gnutls
+t_test_endpoints_glib_gnutls_SOURCES = t/endpoints.c t/loop-backend-glib.c t/tls-backend-gnutls.c
+nodist_t_test_endpoints_glib_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_glib_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_glib_gnutls_LDADD = libprotobuf-c-grpc2-glib.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(GLIB_LIBS) $(GNUTLS_LIBS)
+endif
+
 # The endpoint test again on the GnuTLS adapter, and the two TLS adapters
 # against each other.
 if BUILD_GNUTLS_ENDPOINTS_TEST
@@ -292,6 +337,22 @@ stress_stress_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) 
 stress_stress_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
 endif
 
+if BUILD_GLIB_TESTS
+BUILT_SOURCES += stress/stress.pb-c.c stress/stress.pb-c.h
+check_PROGRAMS += stress/stress-glib
+if !BUILD_UV_TESTS
+if !BUILD_POLL_TESTS
+if !BUILD_DISPATCH_TESTS
+TESTS += stress/smoke.sh
+endif
+endif
+endif
+stress_stress_glib_SOURCES = stress/stress.c t/loop-backend-glib.c
+nodist_stress_stress_glib_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
+stress_stress_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/stress
+stress_stress_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+endif
+
 # ---- examples ----
 if BUILD_EXAMPLES
 check_PROGRAMS += examples/libuv-server examples/libuv-client
@@ -328,8 +389,12 @@ else
 if BUILD_DISPATCH_TESTS
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
 else
+if BUILD_GLIB_TESTS
+BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+else
 if BUILD_EXAMPLES
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+endif
 endif
 endif
 endif
