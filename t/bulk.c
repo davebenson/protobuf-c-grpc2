@@ -12,6 +12,7 @@
 
 #include "protobuf-c-grpc2/protobuf-c-grpc2.h"
 #include "greeter.pb-c.h"
+#include "free-port.h"
 #include "loop-backend.h"
 
 #define BIG (3u << 20)			/* 3 MiB: well above any socket buffer */
@@ -142,7 +143,7 @@ main(void)
 	Example__Greeter_Service greeter = EXAMPLE__GREETER__INIT(greeter_);
 	ProtobufCService *services[] = { &greeter.base };
 	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
-	unsigned port = 20000 + ((unsigned) getpid() * 7 + 5) % 20000;
+	unsigned port = test_free_port();
 	int i, rv;
 
 	loop = test_loop_new();

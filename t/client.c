@@ -11,6 +11,7 @@
 
 #include "protobuf-c-grpc2/protobuf-c-grpc2.h"
 #include "greeter.pb-c.h"
+#include "free-port.h"
 #include "loop-backend.h"
 
 /* ---- a minimal Greeter ---- */
@@ -234,7 +235,7 @@ main(void)
 
 	greeter = (Example__Greeter_Service) EXAMPLE__GREETER__INIT(greeter_);
 	test_free_while_connecting();
-	port = 20000 + ((unsigned) getpid() * 7 + 3) % 20000;
+	port = test_free_port();
 	loop = test_loop_new();
 
 	co.host = "127.0.0.1";

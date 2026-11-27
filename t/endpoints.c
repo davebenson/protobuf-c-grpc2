@@ -14,14 +14,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <openssl/err.h>
-#include <openssl/evp.h>
-#include <openssl/x509v3.h>
-
 #include "protobuf-c-grpc2/protobuf-c-grpc2.h"
-#include "protobuf-c-grpc2/protobuf-c-grpc2-openssl.h"
 #include "greeter.pb-c.h"
 #include "loop-backend.h"
+#include "tls-backend.h"
+#include "free-port.h"
 
 /* ---- the service ---- */
 
@@ -102,36 +99,6 @@ greeter_collect(Example__Greeter_Service *s, const Example__HelloRequest *first,
 	if (first != NULL)
 		sum_send(&ss->base, &first->base);
 	return &ss->base;
-}
-
-/* ---- certificates ---- */
-
-static X509 *
-make_cert(EVP_PKEY *key, const char *cn)
-{
-	X509 *x = X509_new();
-	X509_NAME *name;
-	X509V3_CTX ctx;
-	X509_EXTENSION *ext;
-
-	X509_set_version(x, 2);
-	ASN1_INTEGER_set(X509_get_serialNumber(x), 1);
-	X509_gmtime_adj(X509_getm_notBefore(x), -60);
-	X509_gmtime_adj(X509_getm_notAfter(x), 3600);
-	X509_set_pubkey(x, key);
-	name = X509_get_subject_name(x);
-	X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-				   (const unsigned char *) cn, -1, -1, 0);
-	X509_set_issuer_name(x, name);
-	X509V3_set_ctx_nodb(&ctx);
-	X509V3_set_ctx(&ctx, x, x, NULL, NULL, 0);
-	ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_subject_alt_name,
-				  "DNS:localhost");
-	assert(ext != NULL);
-	X509_add_ext(x, ext, -1);
-	X509_EXTENSION_free(ext);
-	assert(X509_sign(x, key, EVP_sha256()) > 0);
-	return x;
 }
 
 /* ---- the run ---- */
@@ -308,10 +275,7 @@ run(int mode)
 	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
 	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
 	Example__Greeter_Service greeter = EXAMPLE__GREETER__INIT(greeter_);
-	unsigned port = 20000 + ((unsigned) getpid() * 7 + (unsigned) mode) % 20000;
-	EVP_PKEY *key = NULL, *other_key = NULL;
-	X509 *cert = NULL, *other_cert = NULL;
-	SSL_CTX *sctx = NULL, *cctx = NULL;
+	unsigned port = test_free_port();
 	int rv;
 
 	mode_ = mode;
@@ -337,42 +301,27 @@ run(int mode)
 	co.on_call_done = on_call_done;
 
 	if (mode > 0) {
-		key = EVP_EC_gen("P-256");
-		cert = make_cert(key, "localhost");
-		sctx = SSL_CTX_new(TLS_server_method());
-		assert(SSL_CTX_use_certificate(sctx, cert) == 1);
-		assert(SSL_CTX_use_PrivateKey(sctx, key) == 1);
-		so.secure_transport =
-			protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+		so.secure_transport = test_tls_new_server();
 		assert(so.secure_transport != NULL);
-		assert(SSL_CTX_get_min_proto_version(sctx) >= TLS1_2_VERSION);
 
 		/* reference counting: the first ref claims the floating
 		 * creation reference, so two refs need two releases; a system
 		 * nobody took is freed by one release */
 		{
 			ProtobufCGrpc2SecureTransportSystem *t =
-				protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+				test_tls_new_server();
 			assert(t != NULL && t->ref != NULL);
 			t->ref(t);
 			t->ref(t);
 			t->destroy(t);
 			t->destroy(t);	/* freed here (ASan: no leak, no reuse) */
-			t = protobuf_c_grpc2_secure_transport_system_new_openssl(sctx);
+			t = test_tls_new_server();
 			t->destroy(t);
 		}
 
-		cctx = SSL_CTX_new(TLS_client_method());
-		SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, NULL);
-		if (mode == 1) {
-			X509_STORE_add_cert(SSL_CTX_get_cert_store(cctx), cert);
-		} else {
-			other_key = EVP_EC_gen("P-256");
-			other_cert = make_cert(other_key, "localhost");
-			X509_STORE_add_cert(SSL_CTX_get_cert_store(cctx), other_cert);
-		}
-		co.secure_transport =
-			protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
+		/* mode 1: the client trusts the server's certificate; mode 2:
+		 * only an unrelated one */
+		co.secure_transport = test_tls_new_client(mode == 1);
 		assert(co.secure_transport != NULL);
 	}
 	server = protobuf_c_grpc2_server_new(&so);
@@ -413,24 +362,17 @@ run(int mode)
 		slow_closure(NULL, slow_closure_data);	/* ends it; frees the call */
 	rv = test_loop_close(loop);		/* fails if anything leaked */
 	assert(rv == 0);
-
-	SSL_CTX_free(cctx);
-	SSL_CTX_free(sctx);
-	X509_free(cert);
-	X509_free(other_cert);
-	EVP_PKEY_free(key);
-	EVP_PKEY_free(other_key);
 }
 
 int
 main(void)
 {
 	run(0);
-	printf("endpoints[%s]: plaintext ok\n", test_backend_name());
+	printf("endpoints[%s/%s]: plaintext ok\n", test_backend_name(), test_tls_name());
 	run(1);
-	printf("endpoints[%s]: TLS ok\n", test_backend_name());
+	printf("endpoints[%s/%s]: TLS ok\n", test_backend_name(), test_tls_name());
 	run(2);
-	printf("endpoints[%s]: untrusted certificate rejected ok\n", test_backend_name());
-	printf("endpoints[%s]: ok\n", test_backend_name());
+	printf("endpoints[%s/%s]: untrusted certificate rejected ok\n", test_backend_name(), test_tls_name());
+	printf("endpoints[%s/%s]: ok\n", test_backend_name(), test_tls_name());
 	return 0;
 }

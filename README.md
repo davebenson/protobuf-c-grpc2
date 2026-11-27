@@ -15,12 +15,12 @@ supported.
   a protobuf-c release; it is on the `streaming-support` branch of
   <https://github.com/davebenson/protobuf-c>.
 * **nghttp2 version 2** (`libnghttp2v2`, pkg-config `libnghttp2v2`).
-* Optionally libuv and OpenSSL, for the adapters below.
+* Optionally libuv, OpenSSL or GnuTLS, for the adapters below.
 
 The libraries build against *installed* copies of these, so this package can
 be released and packaged separately from protobuf-c itself.
 
-It builds up to five libraries, each with its own pkg-config file and headers, so
+It builds up to six libraries, each with its own pkg-config file and headers, so
 distributions can split it into separate packages:
 
 | library                     | needs            | provides |
@@ -30,10 +30,11 @@ distributions can split it into separate packages:
 | `protobuf-c-grpc2-poll`     | POSIX            | a small poll(2) event loop and I/O system, for programs without an event loop of their own |
 | `protobuf-c-grpc2-dispatch` | protobuf-c-rpc (with prepare functions) | an I/O system on protobuf-c-rpc's `ProtobufCRPCDispatch`, to share a main-loop with protobuf-c-rpc services |
 | `protobuf-c-grpc2-openssl`  | OpenSSL          | an OpenSSL secure transport |
+| `protobuf-c-grpc2-gnutls`   | GnuTLS           | a GnuTLS secure transport |
 
 `--without-uv` / `--without-poll` / `--without-dispatch` / `--without-openssl`
-(or `-DWITH_UV=OFF` / `-DWITH_POLL=OFF` / `-DWITH_DISPATCH=OFF` /
-`-DWITH_OPENSSL=OFF`) skip an adapter; they are otherwise built when found.
+/ `--without-gnutls` (or `-DWITH_UV=OFF` / `-DWITH_POLL=OFF` /
+`-DWITH_DISPATCH=OFF` / `-DWITH_OPENSSL=OFF` / `-DWITH_GNUTLS=OFF`) skip an adapter; they are otherwise built when found.
 
 ## Building
 
@@ -78,8 +79,34 @@ nothing.
 `ProtobufCGrpc2IoSystem` (TCP listen, connect and streams, timers, and a hook
 that runs before the loop blocks) and a `ProtobufCGrpc2SecureTransportSystem`
 (a sans-I/O, BIO-style TLS session). The adapter libraries provide libuv,
-poll(2), protobuf-c-rpc dispatch and OpenSSL versions; implement the interfaces to support another event loop or
-TLS library. The core never sees libuv or OpenSSL.
+poll(2), protobuf-c-rpc dispatch and OpenSSL and GnuTLS versions; implement the interfaces to support another event loop or
+TLS library. The core never sees libuv, OpenSSL or GnuTLS.
+
+### TLS with GnuTLS
+
+`protobuf-c-grpc2-gnutls.h` is the same thing for GnuTLS; either adapter works
+with any I/O system, and a server and a client in one program may use
+different ones:
+
+    gnutls_certificate_credentials_t cred;
+    gnutls_certificate_allocate_credentials(&cred);
+    gnutls_certificate_set_x509_key_file(cred, "cert.pem", "key.pem",
+                                         GNUTLS_X509_FMT_PEM);   /* a server */
+    gnutls_certificate_set_x509_system_trust(cred);              /* a client */
+    ProtobufCGrpc2GnutlsOptions to = PROTOBUF_C_GRPC2_GNUTLS_OPTIONS_INIT;
+    to.credentials = cred;
+    o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_gnutls(&to);
+
+Two differences from the OpenSSL adapter. GnuTLS credentials are not
+reference counted, so the system takes *ownership* of `credentials` (and frees
+them with its last reference, also if creating the system fails); make
+credentials for each system. And a client always verifies the server's
+certificate chain and name, so it needs trust roots in its credentials; there
+is no way to switch verification off. Like the other options structs it has a
+`struct_size`, so options can be added later; today the only other one is
+`policy`, a GnuTLS priority string (protocol versions, ciphers), which most
+programs leave NULL for "NORMAL" limited to TLS 1.2 and later, as gRPC
+requires.
 
 ### Without an event loop: the poll adapter
 
@@ -124,6 +151,9 @@ The tests under `t/` that need an event loop (`endpoints`, `client`, `bulk`)
 run once on each backend, through the small shim in `t/loop-backend.h`; the
 dispatch adapter is tested both with `protobuf_c_rpc_dispatch_run()` and with
 an embedding loop of its own (`dispatch-embed`).
+The endpoint test (a server and a client, with and without TLS) also runs once
+per TLS library, through `t/tls-backend.h`, and `t/tls-interop.c` connects the
+OpenSSL and GnuTLS adapters to each other in every combination.
 
 ## Building a client
 
@@ -143,7 +173,7 @@ connection, and backs off after failed attempts.
     protobuf_c_grpc2_client_free(client);
 
 For TLS, configure the `SSL_CTX` with the trust roots and
-`SSL_VERIFY_PEER`; the server name checked (and sent as SNI) is `host` unless
+`SSL_VERIFY_PEER` (with GnuTLS, put the trust roots in the credentials); the server name checked (and sent as SNI) is `host` unless
 `server_name` says otherwise. The service handle stays valid across
 reconnects.
 

@@ -55,6 +55,12 @@ AS_IF([test "x$with_openssl" != xno],
       [PKG_CHECK_MODULES([OPENSSL], [openssl], [have_openssl=yes], [have_openssl=no])])
 AM_CONDITIONAL([WITH_OPENSSL], [test "$have_openssl" = yes])
 
+AC_ARG_WITH([gnutls], AS_HELP_STRING([--without-gnutls], [do not build the GnuTLS adapter]))
+have_gnutls=no
+AS_IF([test "x$with_gnutls" != xno],
+      [PKG_CHECK_MODULES([GNUTLS], [gnutls], [have_gnutls=yes], [have_gnutls=no])])
+AM_CONDITIONAL([WITH_GNUTLS], [test "$have_gnutls" = yes])
+
 # Tests and examples are generated with protoc and protoc-gen-c.
 AC_ARG_WITH([protoc], AS_HELP_STRING([--with-protoc=PATH], [protoc used to build tests]))
 AC_ARG_WITH([protoc-gen-c], AS_HELP_STRING([--with-protoc-gen-c=PATH], [protoc-gen-c used to build tests]))
@@ -74,11 +80,18 @@ AM_CONDITIONAL([BUILD_DISPATCH_TESTS],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes])
 AM_CONDITIONAL([BUILD_DISPATCH_ENDPOINTS_TEST],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes -a "$have_openssl" = yes])
+AM_CONDITIONAL([BUILD_GNUTLS_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_gnutls" = yes -a "$have_uv" = yes])
+AM_CONDITIONAL([BUILD_POLL_GNUTLS_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_gnutls" = yes -a "x$with_poll" != xno])
+AM_CONDITIONAL([BUILD_DISPATCH_GNUTLS_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_gnutls" = yes -a "$have_dispatch" = yes])
+AM_CONDITIONAL([BUILD_TLS_INTEROP_TEST], [test "$have_openssl" = yes -a "$have_gnutls" = yes])
 AM_CONDITIONAL([BUILD_UV_TESTS],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_uv" = yes])
 AM_CONDITIONAL([BUILD_EXAMPLES],
                [test "x$enable_examples" != xno -a "$have_uv" = yes -a -n "$PROTOC" -a -n "$PROTOC_GEN_C"])
 AM_CONDITIONAL([EXAMPLES_OPENSSL], [test "$have_openssl" = yes])
 
-AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-dispatch.pc libprotobuf-c-grpc2-openssl.pc])
+AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-dispatch.pc libprotobuf-c-grpc2-openssl.pc libprotobuf-c-grpc2-gnutls.pc])
 AC_OUTPUT

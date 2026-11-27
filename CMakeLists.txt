@@ -9,6 +9,7 @@
 #   protobuf-c-grpc2-poll     poll(2) I/O system      (POSIX only)
 #   protobuf-c-grpc2-dispatch ProtobufCDispatch I/O system (needs protobuf-c-rpc)
 #   protobuf-c-grpc2-openssl  OpenSSL secure transport (needs OpenSSL)
+#   protobuf-c-grpc2-gnutls   GnuTLS secure transport  (needs GnuTLS)
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 project(protobuf-c-grpc2 VERSION 0.1.0 LANGUAGES C)
 
@@ -23,6 +24,7 @@ option(WITH_UV "Build the libuv adapter" ON)
 option(WITH_POLL "Build the poll(2) adapter" ON)
 option(WITH_DISPATCH "Build the ProtobufCDispatch (protobuf-c-rpc) adapter" ON)
 option(WITH_OPENSSL "Build the OpenSSL adapter" ON)
+option(WITH_GNUTLS "Build the GnuTLS adapter" ON)
 
 if(WITH_UV)
   pkg_check_modules(LIBUV IMPORTED_TARGET libuv)
@@ -54,6 +56,13 @@ if(WITH_OPENSSL)
   pkg_check_modules(OPENSSL IMPORTED_TARGET openssl)
   if(NOT OPENSSL_FOUND)
     message(STATUS "OpenSSL not found: not building protobuf-c-grpc2-openssl")
+  endif()
+endif()
+
+if(WITH_GNUTLS)
+  pkg_check_modules(GNUTLS IMPORTED_TARGET gnutls)
+  if(NOT GNUTLS_FOUND)
+    message(STATUS "GnuTLS not found: not building protobuf-c-grpc2-gnutls")
   endif()
 endif()
 
@@ -153,6 +162,21 @@ if(OPENSSL_FOUND)
   grpc2_pc(protobuf-c-grpc2-openssl)
 endif()
 
+if(GNUTLS_FOUND)
+  add_library(protobuf-c-grpc2-gnutls gnutls/protobuf-c-grpc2-gnutls.c)
+  target_link_libraries(protobuf-c-grpc2-gnutls PUBLIC protobuf-c-grpc2
+    PkgConfig::GNUTLS)
+  target_compile_options(protobuf-c-grpc2-gnutls PRIVATE -Wall -Wextra)
+  set_target_properties(protobuf-c-grpc2-gnutls PROPERTIES
+    VERSION ${PROJECT_VERSION} SOVERSION 0)
+  install(TARGETS protobuf-c-grpc2-gnutls
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(FILES protobuf-c-grpc2/protobuf-c-grpc2-gnutls.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/protobuf-c-grpc2)
+  grpc2_pc(protobuf-c-grpc2-gnutls)
+endif()
+
 # ---- tests and examples ----
 if(BUILD_TESTS OR BUILD_EXAMPLES)
   find_program(PROTOC protoc REQUIRED)
@@ -210,6 +234,16 @@ if(BUILD_TESTS)
     set_tests_properties(poll PROPERTIES TIMEOUT 60)
   endif()
 
+  if(OPENSSL_FOUND AND GNUTLS_FOUND)
+    add_executable(test-tls-interop t/tls-interop.c)
+    target_include_directories(test-tls-interop PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/t)
+    target_link_libraries(test-tls-interop
+      protobuf-c-grpc2-openssl protobuf-c-grpc2-gnutls)
+    add_test(NAME tls-interop COMMAND test-tls-interop)
+    set_tests_properties(tls-interop PROPERTIES TIMEOUT 60)
+  endif()
+
   if(DISPATCH_FOUND)
     add_executable(test-dispatch t/dispatch.c)
     target_link_libraries(test-dispatch protobuf-c-grpc2-dispatch)
@@ -224,18 +258,29 @@ if(BUILD_TESTS)
   endif()
   foreach(backend ${BACKENDS})
     string(REGEX REPLACE "-embed$" "" lib ${backend})
-    if(OPENSSL_FOUND)
-      add_executable(test-endpoints-${backend} t/endpoints.c
-        t/loop-backend-${backend}.c
-        ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
-      target_include_directories(test-endpoints-${backend} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/t
-        ${CMAKE_CURRENT_BINARY_DIR}/examples)
-      target_link_libraries(test-endpoints-${backend}
-        protobuf-c-grpc2-${lib} protobuf-c-grpc2-openssl)
-      add_test(NAME endpoints-${backend} COMMAND test-endpoints-${backend})
-      set_tests_properties(endpoints-${backend} PROPERTIES TIMEOUT 60)
-    endif()
+    # The endpoint test runs on every TLS library as well, through the shim
+    # in t/tls-backend.h.
+    foreach(tls openssl gnutls)
+      string(TOUPPER ${tls} TLS_UP)
+      if(${TLS_UP}_FOUND)
+        if(tls STREQUAL "openssl")
+          set(ep test-endpoints-${backend})
+        else()
+          set(ep test-endpoints-${backend}-${tls})
+        endif()
+        add_executable(${ep} t/endpoints.c
+          t/loop-backend-${backend}.c t/tls-backend-${tls}.c
+          ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+        target_include_directories(${ep} PRIVATE
+          ${CMAKE_CURRENT_SOURCE_DIR}/t
+          ${CMAKE_CURRENT_BINARY_DIR}/examples)
+        target_link_libraries(${ep}
+          protobuf-c-grpc2-${lib} protobuf-c-grpc2-${tls})
+        string(REGEX REPLACE "^test-" "" ep_name ${ep})
+        add_test(NAME ${ep_name} COMMAND ${ep})
+        set_tests_properties(${ep_name} PROPERTIES TIMEOUT 60)
+      endif()
+    endforeach()
 
     add_executable(test-bulk-${backend} t/bulk.c
       t/loop-backend-${backend}.c

@@ -16,11 +16,12 @@ grpc2includedir = $(includedir)/protobuf-c-grpc2
 EXTRA_DIST = CMakeLists.txt \
 	libprotobuf-c-grpc2.pc.in libprotobuf-c-grpc2-uv.pc.in \
 	libprotobuf-c-grpc2-openssl.pc.in libprotobuf-c-grpc2-poll.pc.in \
-	libprotobuf-c-grpc2-dispatch.pc.in \
+	libprotobuf-c-grpc2-dispatch.pc.in libprotobuf-c-grpc2-gnutls.pc.in \
 	protobuf-c-grpc2/protobuf-c-grpc2-internal.h \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
+	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh \
 	stress/stress.proto stress/stress.c stress/smoke.sh
@@ -82,6 +83,17 @@ grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-openssl.h
 pkgconfig_DATA += libprotobuf-c-grpc2-openssl.pc
 endif
 
+# ---- GnuTLS adapter ----
+if WITH_GNUTLS
+lib_LTLIBRARIES += libprotobuf-c-grpc2-gnutls.la
+libprotobuf_c_grpc2_gnutls_la_SOURCES = gnutls/protobuf-c-grpc2-gnutls.c
+libprotobuf_c_grpc2_gnutls_la_CPPFLAGS = $(AM_CPPFLAGS) $(GNUTLS_CFLAGS)
+libprotobuf_c_grpc2_gnutls_la_LIBADD = libprotobuf-c-grpc2.la $(GNUTLS_LIBS)
+libprotobuf_c_grpc2_gnutls_la_LDFLAGS = -version-info 0:0:0 -no-undefined
+grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-gnutls.h
+pkgconfig_DATA += libprotobuf-c-grpc2-gnutls.pc
+endif
+
 # ---- tests ----
 if BUILD_TESTS
 check_PROGRAMS += t/test-loopback
@@ -120,7 +132,7 @@ endif
 if BUILD_ENDPOINTS_TEST
 check_PROGRAMS += t/test-endpoints-uv
 TESTS += t/test-endpoints-uv
-t_test_endpoints_uv_SOURCES = t/endpoints.c t/loop-backend-uv.c
+t_test_endpoints_uv_SOURCES = t/endpoints.c t/loop-backend-uv.c t/tls-backend-openssl.c
 nodist_t_test_endpoints_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_endpoints_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_endpoints_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
@@ -143,7 +155,7 @@ endif
 if BUILD_POLL_ENDPOINTS_TEST
 check_PROGRAMS += t/test-endpoints-poll
 TESTS += t/test-endpoints-poll
-t_test_endpoints_poll_SOURCES = t/endpoints.c t/loop-backend-poll.c
+t_test_endpoints_poll_SOURCES = t/endpoints.c t/loop-backend-poll.c t/tls-backend-openssl.c
 nodist_t_test_endpoints_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_endpoints_poll_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_endpoints_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2-openssl.la \
@@ -178,16 +190,63 @@ endif
 if BUILD_DISPATCH_ENDPOINTS_TEST
 check_PROGRAMS += t/test-endpoints-dispatch t/test-endpoints-dispatch-embed
 TESTS += t/test-endpoints-dispatch t/test-endpoints-dispatch-embed
-t_test_endpoints_dispatch_SOURCES = t/endpoints.c t/loop-backend-dispatch.c
+t_test_endpoints_dispatch_SOURCES = t/endpoints.c t/loop-backend-dispatch.c t/tls-backend-openssl.c
 nodist_t_test_endpoints_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_endpoints_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_endpoints_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
 	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
-t_test_endpoints_dispatch_embed_SOURCES = t/endpoints.c t/loop-backend-dispatch-embed.c
+t_test_endpoints_dispatch_embed_SOURCES = t/endpoints.c t/loop-backend-dispatch-embed.c t/tls-backend-openssl.c
 nodist_t_test_endpoints_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_endpoints_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_endpoints_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
 	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
+endif
+
+# The endpoint test again on the GnuTLS adapter, and the two TLS adapters
+# against each other.
+if BUILD_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-uv-gnutls
+TESTS += t/test-endpoints-uv-gnutls
+t_test_endpoints_uv_gnutls_SOURCES = t/endpoints.c t/loop-backend-uv.c t/tls-backend-gnutls.c
+nodist_t_test_endpoints_uv_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_uv_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_uv_gnutls_LDADD = libprotobuf-c-grpc2-uv.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(LIBUV_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_POLL_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-poll-gnutls
+TESTS += t/test-endpoints-poll-gnutls
+t_test_endpoints_poll_gnutls_SOURCES = t/endpoints.c t/loop-backend-poll.c t/tls-backend-gnutls.c
+nodist_t_test_endpoints_poll_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_poll_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_poll_gnutls_LDADD = libprotobuf-c-grpc2-poll.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(GNUTLS_LIBS)
+endif
+if BUILD_DISPATCH_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-dispatch-gnutls
+TESTS += t/test-endpoints-dispatch-gnutls
+t_test_endpoints_dispatch_gnutls_SOURCES = t/endpoints.c t/loop-backend-dispatch.c t/tls-backend-gnutls.c
+nodist_t_test_endpoints_dispatch_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_dispatch_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_dispatch_gnutls_LDADD = libprotobuf-c-grpc2-dispatch.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_DISPATCH_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-dispatch-embed-gnutls
+TESTS += t/test-endpoints-dispatch-embed-gnutls
+t_test_endpoints_dispatch_embed_gnutls_SOURCES = t/endpoints.c t/loop-backend-dispatch-embed.c t/tls-backend-gnutls.c
+nodist_t_test_endpoints_dispatch_embed_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_dispatch_embed_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_dispatch_embed_gnutls_LDADD = libprotobuf-c-grpc2-dispatch.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_TLS_INTEROP_TEST
+check_PROGRAMS += t/test-tls-interop
+TESTS += t/test-tls-interop
+t_test_tls_interop_SOURCES = t/tls-interop.c
+t_test_tls_interop_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t
+t_test_tls_interop_LDADD = libprotobuf-c-grpc2-openssl.la libprotobuf-c-grpc2-gnutls.la \
+	libprotobuf-c-grpc2.la $(OPENSSL_LIBS) $(GNUTLS_LIBS)
 endif
 
 # ---- stress: forks a server and N clients (see stress/stress.c) ----
