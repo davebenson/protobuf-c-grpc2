@@ -97,6 +97,7 @@ TLS library. The core never sees libuv, OpenSSL or GnuTLS.
     SSL_CTX_set_default_verify_paths(cctx);                   /* or load_verify_locations */
     SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, NULL);
     co.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
+    SSL_CTX_free(cctx);
 
 Configure certificates, keys, trust roots, verification and the protocol
 versions on the context as usual. The system takes its own reference to the
