@@ -82,10 +82,36 @@ that runs before the loop blocks) and a `ProtobufCGrpc2SecureTransportSystem`
 poll(2), protobuf-c-rpc dispatch and OpenSSL and GnuTLS versions; implement the interfaces to support another event loop or
 TLS library. The core never sees libuv, OpenSSL or GnuTLS.
 
+### TLS with OpenSSL
+
+`protobuf-c-grpc2-openssl.h` makes a secure transport system from an
+`SSL_CTX`. It works with any I/O system (it uses memory BIOs, never sockets):
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());          /* a server */
+    SSL_CTX_use_certificate_chain_file(ctx, "cert.pem");
+    SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM);
+    o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+    SSL_CTX_free(ctx);                                        /* it keeps its own reference */
+
+    SSL_CTX *cctx = SSL_CTX_new(TLS_client_method());         /* a client */
+    SSL_CTX_set_default_verify_paths(cctx);                   /* or load_verify_locations */
+    SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, NULL);
+    co.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
+
+Configure certificates, keys, trust roots, verification and the protocol
+versions on the context as usual. The system takes its own reference to the
+context, so you may free yours; it modifies the context in two ways: it
+installs an ALPN callback that accepts `h2` (replacing any you set), and it
+raises the minimum protocol version to TLS 1.2 if it was lower, as gRPC
+requires. Client sessions offer only `h2`, and verify the server (against the
+client's `server_name`, by default its `host`) when the context has
+`SSL_VERIFY_PEER` set. The system is created floating: the first server or
+client to take it claims the creation reference, and further ones share it.
+
 ### TLS with GnuTLS
 
-`protobuf-c-grpc2-gnutls.h` is the same thing for GnuTLS; either adapter works
-with any I/O system, and a server and a client in one program may use
+`protobuf-c-grpc2-gnutls.h` is the same thing for GnuTLS. Either adapter
+works with any I/O system, and a server and a client in one program may use
 different ones:
 
     gnutls_certificate_credentials_t cred;
