@@ -20,7 +20,7 @@ supported.
 The libraries build against *installed* copies of these, so this package can
 be released and packaged separately from protobuf-c itself.
 
-It builds four libraries, each with its own pkg-config file and headers, so
+It builds up to five libraries, each with its own pkg-config file and headers, so
 distributions can split it into separate packages:
 
 | library                     | needs            | provides |
@@ -28,10 +28,12 @@ distributions can split it into separate packages:
 | `protobuf-c-grpc2`          | protobuf-c, nghttp2-v2 | the HTTP/2+gRPC engine, servers and clients, and the plugin interfaces (no event loop or TLS) |
 | `protobuf-c-grpc2-uv`       | libuv            | a libuv I/O system |
 | `protobuf-c-grpc2-poll`     | POSIX            | a small poll(2) event loop and I/O system, for programs without an event loop of their own |
+| `protobuf-c-grpc2-dispatch` | protobuf-c-rpc (with prepare functions) | an I/O system on protobuf-c-rpc's `ProtobufCRPCDispatch`, to share a main-loop with protobuf-c-rpc services |
 | `protobuf-c-grpc2-openssl`  | OpenSSL          | an OpenSSL secure transport |
 
-`--without-uv` / `--without-poll` / `--without-openssl` (or `-DWITH_UV=OFF` /
-`-DWITH_POLL=OFF` / `-DWITH_OPENSSL=OFF`) skip an adapter; they are otherwise built when found.
+`--without-uv` / `--without-poll` / `--without-dispatch` / `--without-openssl`
+(or `-DWITH_UV=OFF` / `-DWITH_POLL=OFF` / `-DWITH_DISPATCH=OFF` /
+`-DWITH_OPENSSL=OFF`) skip an adapter; they are otherwise built when found.
 
 ## Building
 
@@ -76,7 +78,7 @@ nothing.
 `ProtobufCGrpc2IoSystem` (TCP listen, connect and streams, timers, and a hook
 that runs before the loop blocks) and a `ProtobufCGrpc2SecureTransportSystem`
 (a sans-I/O, BIO-style TLS session). The adapter libraries provide libuv,
-poll(2) and OpenSSL versions; implement the interfaces to support another event loop or
+poll(2), protobuf-c-rpc dispatch and OpenSSL versions; implement the interfaces to support another event loop or
 TLS library. The core never sees libuv or OpenSSL.
 
 ### Without an event loop: the poll adapter
@@ -97,8 +99,31 @@ it (failing if anything created on it is still alive). Host names given to
 never block. `poll(2)` is linear in the number of descriptors, which is fine
 for thousands of connections but not for far more.
 
+### With protobuf-c-rpc: the dispatch adapter
+
+A program that already runs `protobuf-c-rpc` services has a
+`ProtobufCRPCDispatch`; `protobuf-c-grpc2-dispatch.h` puts gRPC servers and
+clients on the same one, so a single main-loop serves both:
+
+    ProtobufCRPCDispatch *d = protobuf_c_rpc_dispatch_default();
+    o.io = protobuf_c_grpc2_io_system_new_dispatch(d);   /* NULL: the default */
+    ...
+    for (;;)
+      protobuf_c_rpc_dispatch_run(d);
+
+The dispatch is not owned by the I/O system and must outlive it. It needs a
+protobuf-c-rpc with *prepare functions* (`protobuf_c_rpc_dispatch_add_prepare()`),
+which is where the core sends the output that callbacks have produced, right
+before the dispatch waits. A program that drives the dispatch from its own
+loop through `protobuf_c_rpc_dispatch_dispatch()` gets them at the end of each
+dispatch, and should call `protobuf_c_rpc_dispatch_run_prepares()` once before
+its first wait. Like the poll adapter it resolves host names with a blocking
+`getaddrinfo()`.
+
 The tests under `t/` that need an event loop (`endpoints`, `client`, `bulk`)
-run once on each backend, through the small shim in `t/loop-backend.h`.
+run once on each backend, through the small shim in `t/loop-backend.h`; the
+dispatch adapter is tested both with `protobuf_c_rpc_dispatch_run()` and with
+an embedding loop of its own (`dispatch-embed`).
 
 ## Building a client
 
@@ -182,7 +207,7 @@ Stream implementations set `input_descriptor` to the request type. Errors are re
 keeps a fixed number of requests in flight and stops after a given number of
 them have been answered; the program prints throughput and latency and exits
 nonzero if any call failed or went missing. It is built once per I/O backend
-(`stress-uv`, `stress-poll`) by CMake and by `make check`, which also runs a
+(`stress-uv`, `stress-poll`, `stress-dispatch`, `stress-dispatch-embed`) by CMake and by `make check`, which also runs a
 short run of every method (`stress/smoke.sh`).
 
     stress-poll -n 8 -p 50 -r 5000 -m mixed -d 1

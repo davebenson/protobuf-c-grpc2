@@ -3,7 +3,8 @@
 # method with a few clients, and fail if any run does.
 # usage: smoke.sh [stress-binary ...]
 if [ $# -eq 0 ]; then
-	for b in ./stress/stress-uv ./stress/stress-poll; do
+	for b in ./stress/stress-uv ./stress/stress-poll \
+	    ./stress/stress-dispatch ./stress/stress-dispatch-embed; do
 		[ -x "$b" ] && set -- "$@" "$b"
 	done
 fi

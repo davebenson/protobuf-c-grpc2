@@ -33,6 +33,22 @@ AM_CONDITIONAL([WITH_UV], [test "$have_uv" = yes])
 AC_ARG_WITH([poll], AS_HELP_STRING([--without-poll], [do not build the poll(2) adapter]))
 AM_CONDITIONAL([WITH_POLL], [test "x$with_poll" != xno])
 
+# The ProtobufCDispatch adapter needs protobuf-c-rpc with prepare functions.
+AC_ARG_WITH([dispatch], AS_HELP_STRING([--without-dispatch], [do not build the ProtobufCDispatch adapter]))
+have_dispatch=no
+AS_IF([test "x$with_dispatch" != xno],
+      [PKG_CHECK_MODULES([PROTOBUF_C_RPC], [libprotobuf-c-rpc], [have_dispatch=yes], [have_dispatch=no])
+       AS_IF([test "$have_dispatch" = yes],
+             [save_CPPFLAGS=$CPPFLAGS
+              CPPFLAGS="$CPPFLAGS $PROTOBUF_C_RPC_CFLAGS $PROTOBUF_C_CFLAGS"
+              AC_CHECK_DECL([protobuf_c_rpc_dispatch_add_prepare],
+                            [], [have_dispatch=no],
+                            [[#include <protobuf-c-rpc/protobuf-c-rpc-dispatch.h>]])
+              CPPFLAGS=$save_CPPFLAGS
+              AS_IF([test "$have_dispatch" = no],
+                    [AC_MSG_NOTICE([protobuf-c-rpc has no prepare functions: not building the dispatch adapter])])])])
+AM_CONDITIONAL([WITH_DISPATCH], [test "$have_dispatch" = yes])
+
 AC_ARG_WITH([openssl], AS_HELP_STRING([--without-openssl], [do not build the OpenSSL adapter]))
 have_openssl=no
 AS_IF([test "x$with_openssl" != xno],
@@ -54,11 +70,15 @@ AM_CONDITIONAL([BUILD_POLL_TESTS],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "x$with_poll" != xno])
 AM_CONDITIONAL([BUILD_POLL_ENDPOINTS_TEST],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "x$with_poll" != xno -a "$have_openssl" = yes])
+AM_CONDITIONAL([BUILD_DISPATCH_TESTS],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes])
+AM_CONDITIONAL([BUILD_DISPATCH_ENDPOINTS_TEST],
+               [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_dispatch" = yes -a "$have_openssl" = yes])
 AM_CONDITIONAL([BUILD_UV_TESTS],
                [test -n "$PROTOC" -a -n "$PROTOC_GEN_C" -a "$have_uv" = yes])
 AM_CONDITIONAL([BUILD_EXAMPLES],
                [test "x$enable_examples" != xno -a "$have_uv" = yes -a -n "$PROTOC" -a -n "$PROTOC_GEN_C"])
 AM_CONDITIONAL([EXAMPLES_OPENSSL], [test "$have_openssl" = yes])
 
-AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-openssl.pc])
+AC_CONFIG_FILES([Makefile libprotobuf-c-grpc2.pc libprotobuf-c-grpc2-uv.pc libprotobuf-c-grpc2-poll.pc libprotobuf-c-grpc2-dispatch.pc libprotobuf-c-grpc2-openssl.pc])
 AC_OUTPUT

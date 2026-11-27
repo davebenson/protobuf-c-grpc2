@@ -16,9 +16,11 @@ grpc2includedir = $(includedir)/protobuf-c-grpc2
 EXTRA_DIST = CMakeLists.txt \
 	libprotobuf-c-grpc2.pc.in libprotobuf-c-grpc2-uv.pc.in \
 	libprotobuf-c-grpc2-openssl.pc.in libprotobuf-c-grpc2-poll.pc.in \
+	libprotobuf-c-grpc2-dispatch.pc.in \
 	protobuf-c-grpc2/protobuf-c-grpc2-internal.h \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
-	t/bulk.c t/poll.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
+	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
+	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh \
 	stress/stress.proto stress/stress.c stress/smoke.sh
@@ -56,6 +58,17 @@ libprotobuf_c_grpc2_poll_la_LIBADD = libprotobuf-c-grpc2.la
 libprotobuf_c_grpc2_poll_la_LDFLAGS = -version-info 0:0:0 -no-undefined
 grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-poll.h
 pkgconfig_DATA += libprotobuf-c-grpc2-poll.pc
+endif
+
+# ---- ProtobufCDispatch (protobuf-c-rpc) adapter ----
+if WITH_DISPATCH
+lib_LTLIBRARIES += libprotobuf-c-grpc2-dispatch.la
+libprotobuf_c_grpc2_dispatch_la_SOURCES = dispatch/protobuf-c-grpc2-dispatch.c
+libprotobuf_c_grpc2_dispatch_la_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS)
+libprotobuf_c_grpc2_dispatch_la_LIBADD = libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS)
+libprotobuf_c_grpc2_dispatch_la_LDFLAGS = -version-info 0:0:0 -no-undefined
+grpc2include_HEADERS += protobuf-c-grpc2/protobuf-c-grpc2-dispatch.h
+pkgconfig_DATA += libprotobuf-c-grpc2-dispatch.pc
 endif
 
 # ---- OpenSSL adapter ----
@@ -137,6 +150,46 @@ t_test_endpoints_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2-op
 	libprotobuf-c-grpc2.la $(OPENSSL_LIBS)
 endif
 
+if BUILD_DISPATCH_TESTS
+check_PROGRAMS += t/test-dispatch t/test-client-dispatch t/test-bulk-dispatch \
+	t/test-client-dispatch-embed t/test-bulk-dispatch-embed
+TESTS += t/test-dispatch t/test-client-dispatch t/test-bulk-dispatch \
+	t/test-client-dispatch-embed t/test-bulk-dispatch-embed
+t_test_dispatch_SOURCES = t/dispatch.c
+t_test_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS)
+t_test_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+t_test_client_dispatch_SOURCES = t/client.c t/loop-backend-dispatch.c
+nodist_t_test_client_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_client_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_client_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+t_test_bulk_dispatch_SOURCES = t/bulk.c t/loop-backend-dispatch.c
+nodist_t_test_bulk_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_bulk_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_bulk_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+t_test_client_dispatch_embed_SOURCES = t/client.c t/loop-backend-dispatch-embed.c
+nodist_t_test_client_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_client_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_client_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+t_test_bulk_dispatch_embed_SOURCES = t/bulk.c t/loop-backend-dispatch-embed.c
+nodist_t_test_bulk_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_bulk_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_bulk_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+endif
+if BUILD_DISPATCH_ENDPOINTS_TEST
+check_PROGRAMS += t/test-endpoints-dispatch t/test-endpoints-dispatch-embed
+TESTS += t/test-endpoints-dispatch t/test-endpoints-dispatch-embed
+t_test_endpoints_dispatch_SOURCES = t/endpoints.c t/loop-backend-dispatch.c
+nodist_t_test_endpoints_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
+t_test_endpoints_dispatch_embed_SOURCES = t/endpoints.c t/loop-backend-dispatch-embed.c
+nodist_t_test_endpoints_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_endpoints_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_endpoints_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
+endif
+
 # ---- stress: forks a server and N clients (see stress/stress.c) ----
 stress/stress.pb-c.c stress/stress.pb-c.h: $(top_srcdir)/stress/stress.proto
 	$(AM_V_GEN)$(MKDIR_P) stress && $(PROTOC) --plugin=protoc-gen-c=$(PROTOC_GEN_C) -I$(top_srcdir)/stress --c_out=$(top_builddir)/stress $(top_srcdir)/stress/stress.proto
@@ -160,6 +213,24 @@ stress_stress_poll_SOURCES = stress/stress.c t/loop-backend-poll.c
 nodist_stress_stress_poll_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
 stress_stress_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/stress
 stress_stress_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+endif
+
+if BUILD_DISPATCH_TESTS
+BUILT_SOURCES += stress/stress.pb-c.c stress/stress.pb-c.h
+check_PROGRAMS += stress/stress-dispatch stress/stress-dispatch-embed
+if !BUILD_UV_TESTS
+if !BUILD_POLL_TESTS
+TESTS += stress/smoke.sh
+endif
+endif
+stress_stress_dispatch_SOURCES = stress/stress.c t/loop-backend-dispatch.c
+nodist_stress_stress_dispatch_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
+stress_stress_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/stress
+stress_stress_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+stress_stress_dispatch_embed_SOURCES = stress/stress.c t/loop-backend-dispatch-embed.c
+nodist_stress_stress_dispatch_embed_SOURCES = stress/stress.pb-c.c stress/stress.pb-c.h
+stress_stress_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/stress
+stress_stress_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
 endif
 
 # ---- examples ----
@@ -195,8 +266,12 @@ else
 if BUILD_POLL_TESTS
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
 else
+if BUILD_DISPATCH_TESTS
+BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+else
 if BUILD_EXAMPLES
 BUILT_SOURCES += examples/greeter.pb-c.c examples/greeter.pb-c.h
+endif
 endif
 endif
 endif
