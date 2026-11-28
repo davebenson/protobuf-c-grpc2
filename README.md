@@ -260,6 +260,38 @@ the meantime (the answer is dropped), and the I/O system is kept until the last
 closure has been finished. A handler that parks a closure forever therefore
 keeps the I/O system alive.
 
+### Running RPC in a thread you can ignore
+
+Most programs would rather not run an event loop at all. With the thread-safe
+options, gRPC can live in one background thread that the rest of the program
+treats as a handle, as `examples/background-rpc.c` does:
+
+    main()                          RPC thread
+    ------                          ----------
+    latch_init(&ready);
+    pthread_create(rpc_thread_main) loop = protobuf_c_grpc2_poll_loop_new();
+    latch_wait(&ready);             io   = protobuf_c_grpc2_io_system_new_poll(loop);
+                                    sts  = ..._secure_transport_system_new_openssl(ctx);
+                                    server = protobuf_c_grpc2_server_new(&so);  /* thread_safe */
+                                    client = protobuf_c_grpc2_client_new(&co);  /* thread_safe */
+                                    latch_signal(&ready);
+    ...any number of threads call   protobuf_c_grpc2_poll_loop_run(loop);
+    the client's service handle...
+    io->post(io, shutdown, ...);    /* shutdown() frees the client and server */
+    pthread_join(rpc_thread);
+
+The thread that creates the client and the server must be the one that runs
+the loop, which is why they are created in the RPC thread and not in `main()`;
+the latch (a semaphore would do) is how `main()` knows the handle is usable.
+Callers wait for a reply by having their closure hand the result to a mutex and
+condition variable (the closure runs on the RPC thread). To stop, post a
+function to the loop with the I/O system's `post`, which is safe from any
+thread: it frees the client and the server, the loop has nothing left to wait
+for and returns, and `main()` joins the thread. The example is built (and run
+as a test) with the poll adapter, so it needs nothing but this library; any
+adapter whose I/O system has `post` works the same way. Give it a certificate
+and key to run the same thing over TLS.
+
 ## Building a client
 
 A client is a "channel" to one server: it connects lazily on the first call
@@ -370,10 +402,14 @@ NAME ca.pem`) to verify it. They are built when libuv is found
 `ctest` runs them against each other, over TLS too when the `openssl` tool
 is available.
 
+`examples/background-rpc.c` runs a server and a client in a background thread
+of their own and calls the client from several threads (see "Running RPC in a
+thread you can ignore"); it needs only the poll adapter, and runs as a test.
+
 Limitations: no message compression, no metadata API, and no cancellation
 or deadline notification for handlers. The client has no retries, load
-balancing or name-resolution policies, and uses a single connection. Nothing
-is thread safe.
+balancing or name-resolution policies, and uses a single connection. Apart
+from thread safe clients and servers, nothing is thread safe.
 
 [ng2]: https://github.com/nghttp2/nghttp2
 

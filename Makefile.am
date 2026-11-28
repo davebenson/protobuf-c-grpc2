@@ -25,7 +25,7 @@ EXTRA_DIST = CMakeLists.txt \
 	t/threads.c t/threads-server.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
 	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
-	examples/libuv-client.c examples/smoke-test.sh \
+	examples/libuv-client.c examples/smoke-test.sh examples/background-rpc.c \
 	stress/stress.proto stress/stress.c stress/smoke.sh
 
 # ---- core: no event loop or TLS dependencies ----
@@ -411,6 +411,20 @@ examples_libuv_client_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $
 if EXAMPLES_OPENSSL
 examples_libuv_client_CPPFLAGS += -DHAVE_OPENSSL=1
 examples_libuv_client_LDADD += libprotobuf-c-grpc2-openssl.la $(OPENSSL_LIBS)
+endif
+endif
+
+# gRPC in a thread of its own (examples/background-rpc.c), on the poll adapter
+if BUILD_POLL_TESTS
+check_PROGRAMS += examples/background-rpc
+TESTS += examples/background-rpc
+examples_background_rpc_SOURCES = examples/background-rpc.c
+nodist_examples_background_rpc_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+examples_background_rpc_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/examples -I$(builddir)/examples
+examples_background_rpc_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+if EXAMPLES_OPENSSL
+examples_background_rpc_CPPFLAGS += -DHAVE_OPENSSL=1
+examples_background_rpc_LDADD += libprotobuf-c-grpc2-openssl.la $(OPENSSL_LIBS)
 endif
 endif
 

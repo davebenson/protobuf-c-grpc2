@@ -406,5 +406,22 @@ if(BUILD_EXAMPLES AND LIBUV_FOUND)
             $<TARGET_FILE:libuv-server> $<TARGET_FILE:libuv-client>)
   set_tests_properties(examples-smoke PROPERTIES TIMEOUT 60)
 elseif(BUILD_EXAMPLES)
-  message(STATUS "libuv not found: not building the examples")
+  message(STATUS "libuv not found: not building the libuv examples")
+endif()
+
+# gRPC in a thread of its own, on the poll adapter (no other dependencies)
+if(BUILD_EXAMPLES AND POLL_FOUND AND PROTOC AND PROTOC_GEN_C)
+  grpc2_protoc(examples greeter)
+  add_executable(background-rpc examples/background-rpc.c
+    ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+  target_include_directories(background-rpc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/examples
+    ${CMAKE_CURRENT_BINARY_DIR}/examples)
+  target_link_libraries(background-rpc protobuf-c-grpc2-poll)
+  if(OPENSSL_FOUND)
+    target_link_libraries(background-rpc protobuf-c-grpc2-openssl)
+    target_compile_definitions(background-rpc PRIVATE HAVE_OPENSSL=1)
+  endif()
+  add_test(NAME examples-background-rpc COMMAND background-rpc)
+  set_tests_properties(examples-background-rpc PROPERTIES TIMEOUT 60)
 endif()
