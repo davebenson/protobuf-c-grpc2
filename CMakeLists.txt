@@ -316,6 +316,24 @@ if(BUILD_TESTS)
         string(REGEX REPLACE "^test-" "" ep_name ${ep})
         add_test(NAME ${ep_name} COMMAND ${ep})
         set_tests_properties(${ep_name} PROPERTIES TIMEOUT 60)
+
+        # mutual TLS, end to end
+        if(tls STREQUAL "openssl")
+          set(mt test-mtls-${backend})
+        else()
+          set(mt test-mtls-${backend}-${tls})
+        endif()
+        add_executable(${mt} t/mtls.c
+          t/loop-backend-${backend}.c t/tls-backend-${tls}.c
+          ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+        target_include_directories(${mt} PRIVATE
+          ${CMAKE_CURRENT_SOURCE_DIR}/t
+          ${CMAKE_CURRENT_BINARY_DIR}/examples)
+        target_link_libraries(${mt}
+          protobuf-c-grpc2-${lib} protobuf-c-grpc2-${tls})
+        string(REGEX REPLACE "^test-" "" mt_name ${mt})
+        add_test(NAME ${mt_name} COMMAND ${mt})
+        set_tests_properties(${mt_name} PROPERTIES TIMEOUT 60)
       endif()
     endforeach()
 

@@ -37,6 +37,11 @@ pump_tls_ready(ConnPump *p)
 			return 0;
 		}
 		p->alpn_checked = 1;
+		/* who is on the other end, if it proved it: known before the
+		 * first byte of application data is read */
+		if (p->tls->vtable->peer_identity != NULL)
+			protobuf_c_grpc2__conn_set_peer(
+				p->conn, p->tls->vtable->peer_identity(p->tls));
 	}
 	return 1;
 }

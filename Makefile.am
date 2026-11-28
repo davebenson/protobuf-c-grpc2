@@ -22,7 +22,7 @@ EXTRA_DIST = CMakeLists.txt \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
-	t/threads.c t/threads-server.c t/auth.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
+	t/threads.c t/threads-server.c t/auth.c t/mtls.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
 	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh examples/background-rpc.c \
@@ -372,6 +372,94 @@ t_test_tls_interop_SOURCES = t/tls-interop.c
 t_test_tls_interop_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t
 t_test_tls_interop_LDADD = libprotobuf-c-grpc2-openssl.la libprotobuf-c-grpc2-gnutls.la \
 	libprotobuf-c-grpc2.la $(OPENSSL_LIBS) $(GNUTLS_LIBS)
+endif
+
+# mutual TLS, end to end
+if BUILD_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-uv
+TESTS += t/test-mtls-uv
+t_test_mtls_uv_SOURCES = t/mtls.c t/loop-backend-uv.c t/tls-backend-openssl.c
+nodist_t_test_mtls_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(LIBUV_LIBS) $(OPENSSL_LIBS)
+endif
+if BUILD_POLL_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-poll
+TESTS += t/test-mtls-poll
+t_test_mtls_poll_SOURCES = t/mtls.c t/loop-backend-poll.c t/tls-backend-openssl.c
+nodist_t_test_mtls_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_poll_CPPFLAGS = $(AM_CPPFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(OPENSSL_LIBS)
+endif
+if BUILD_DISPATCH_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-dispatch t/test-mtls-dispatch-embed
+TESTS += t/test-mtls-dispatch t/test-mtls-dispatch-embed
+t_test_mtls_dispatch_SOURCES = t/mtls.c t/loop-backend-dispatch.c t/tls-backend-openssl.c
+nodist_t_test_mtls_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
+t_test_mtls_dispatch_embed_SOURCES = t/mtls.c t/loop-backend-dispatch-embed.c t/tls-backend-openssl.c
+nodist_t_test_mtls_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(OPENSSL_LIBS)
+endif
+if BUILD_GLIB_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-glib
+TESTS += t/test-mtls-glib
+t_test_mtls_glib_SOURCES = t/mtls.c t/loop-backend-glib.c t/tls-backend-openssl.c
+nodist_t_test_mtls_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) $(OPENSSL_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2-openssl.la \
+	libprotobuf-c-grpc2.la $(GLIB_LIBS) $(OPENSSL_LIBS)
+endif
+if BUILD_GLIB_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-glib-gnutls
+TESTS += t/test-mtls-glib-gnutls
+t_test_mtls_glib_gnutls_SOURCES = t/mtls.c t/loop-backend-glib.c t/tls-backend-gnutls.c
+nodist_t_test_mtls_glib_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_glib_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_glib_gnutls_LDADD = libprotobuf-c-grpc2-glib.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(GLIB_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-uv-gnutls
+TESTS += t/test-mtls-uv-gnutls
+t_test_mtls_uv_gnutls_SOURCES = t/mtls.c t/loop-backend-uv.c t/tls-backend-gnutls.c
+nodist_t_test_mtls_uv_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_uv_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_uv_gnutls_LDADD = libprotobuf-c-grpc2-uv.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(LIBUV_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_POLL_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-poll-gnutls
+TESTS += t/test-mtls-poll-gnutls
+t_test_mtls_poll_gnutls_SOURCES = t/mtls.c t/loop-backend-poll.c t/tls-backend-gnutls.c
+nodist_t_test_mtls_poll_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_poll_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_poll_gnutls_LDADD = libprotobuf-c-grpc2-poll.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(GNUTLS_LIBS)
+endif
+if BUILD_DISPATCH_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-dispatch-gnutls
+TESTS += t/test-mtls-dispatch-gnutls
+t_test_mtls_dispatch_gnutls_SOURCES = t/mtls.c t/loop-backend-dispatch.c t/tls-backend-gnutls.c
+nodist_t_test_mtls_dispatch_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_dispatch_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_dispatch_gnutls_LDADD = libprotobuf-c-grpc2-dispatch.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(GNUTLS_LIBS)
+endif
+if BUILD_DISPATCH_GNUTLS_ENDPOINTS_TEST
+check_PROGRAMS += t/test-mtls-dispatch-embed-gnutls
+TESTS += t/test-mtls-dispatch-embed-gnutls
+t_test_mtls_dispatch_embed_gnutls_SOURCES = t/mtls.c t/loop-backend-dispatch-embed.c t/tls-backend-gnutls.c
+nodist_t_test_mtls_dispatch_embed_gnutls_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_mtls_dispatch_embed_gnutls_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) $(GNUTLS_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_mtls_dispatch_embed_gnutls_LDADD = libprotobuf-c-grpc2-dispatch.la \
+	libprotobuf-c-grpc2-gnutls.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS) $(GNUTLS_LIBS)
 endif
 
 # ---- stress: forks a server and N clients (see stress/stress.c) ----

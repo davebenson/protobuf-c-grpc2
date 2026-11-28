@@ -149,10 +149,43 @@ them with its last reference, also if creating the system fails); make
 credentials for each system. And a client always verifies the server's
 certificate chain and name, so it needs trust roots in its credentials; there
 is no way to switch verification off. Like the other options structs it has a
-`struct_size`, so options can be added later; today the only other one is
-`policy`, a GnuTLS priority string (protocol versions, ciphers), which most
-programs leave NULL for "NORMAL" limited to TLS 1.2 and later, as gRPC
-requires.
+`struct_size`, so options can be added later. `policy` is a GnuTLS priority
+string (protocol versions, ciphers), which most programs leave NULL for
+"NORMAL" limited to TLS 1.2 and later, as gRPC requires; `client_auth` and
+`peer_identity` are for mutual TLS, below.
+
+### Mutual TLS and peer identity
+
+Both TLS adapters can make a server ask its clients for a certificate, and
+tell the core who the other end proved to be. Set `client_auth` in the options
+to `PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED` (clients without a valid
+certificate are refused during the handshake) or `_OPTIONAL` (clients without
+one are let in anonymously; one with a bad certificate is not). The
+certificate must chain to the trust roots you configured: on the `SSL_CTX` for
+OpenSSL (`SSL_CTX_load_verify_locations()` or its store), in the credentials
+for GnuTLS (`gnutls_certificate_set_x509_trust_file()`). A client presents the
+certificate and key that its context or credentials hold, when asked:
+
+    /* server (OpenSSL): trust the CA that signs client certificates */
+    SSL_CTX_load_verify_locations(ctx, "clients-ca.pem", NULL);
+    SSL_CTX_set_client_CA_list(ctx, SSL_load_client_CA_file("clients-ca.pem"));
+    ssl.client_auth = PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED;
+    /* client (OpenSSL): SSL_CTX_use_certificate_chain_file(), _use_PrivateKey_file() */
+
+The identity of a verified peer certificate is what `peer_identity` selects
+(`ProtobufCGrpc2PeerIdentity`): by default the first URI subject alternative
+name (a SPIFFE ID, say), else the first DNS name, else the first e-mail
+address, else the common name; or `_SUBJECT`, the subject's distinguished
+name; or `_FINGERPRINT`, the certificate's SHA-256 in hex, for pinning. A
+certificate that did not verify gives no identity. On the server it reaches
+the authenticator as `ProtobufCGrpc2CallInfo::peer` (NULL for cleartext
+connections and anonymous clients), which can accept or refuse the call and
+return it as the principal that handlers read with
+`protobuf_c_grpc2_current_call_principal()`; a client's secure transport
+reports its server's identity the same way (through the transport's
+`peer_identity`, which the core does not otherwise use). A custom TLS
+transport supports this with the optional `peer_identity` member of its
+session vtable.
 
 ### Without an event loop: the poll adapter
 
@@ -369,8 +402,8 @@ reads the identity the authenticator gave with
 call. For more than a bearer token, implement `ProtobufCGrpc2ServerAuth`
 yourself: `header_names` lists the request headers you want to see
 (default `authorization`), and `check()` gets them with the call's `info`
-(whose `peer` will carry the TLS peer's identity once the TLS adapters provide
-it). Hooks answer from the loop thread; to decide in another thread, post the
+(whose `peer` carries the identity of a TLS client that presented a verified
+certificate: see "Mutual TLS and peer identity"). Hooks answer from the loop thread; to decide in another thread, post the
 answer back with the I/O system's `post`.
 
 ## Building a client

@@ -16,4 +16,16 @@ ProtobufCGrpc2SecureTransportSystem *test_tls_new_server(void);
  * certificate (`trusted` nonzero) or only an unrelated one. */
 ProtobufCGrpc2SecureTransportSystem *test_tls_new_client(int trusted);
 
+
+/* ---- mutual TLS (certificates in tls-test-certs.h) ---- */
+
+/* A server that asks for client certificates (a ProtobufCGrpc2ClientAuth),
+ * trusts clients A and B but not C, and derives peer identities of the given
+ * kind (a ProtobufCGrpc2PeerIdentity). */
+ProtobufCGrpc2SecureTransportSystem *
+test_tls_new_mtls_server(int client_auth, int identity_kind);
+/* A client that trusts the server's certificate and presents client
+ * certificate A, B or C (`which` 1, 2 or 3), or none (0). */
+ProtobufCGrpc2SecureTransportSystem *test_tls_new_mtls_client(int which);
+
 #endif

@@ -46,8 +46,11 @@ typedef struct ProtobufCGrpc2CallInfo {
 	size_t struct_size;
 	const ProtobufCServiceDescriptor *service;
 	const ProtobufCMethodDescriptor *method;
-	/** Server side: the identity of the TLS peer if the transport
-	 *  authenticated one, else NULL. (No TLS adapter provides it yet.) */
+	/** Server side: the identity of the TLS client if its certificate
+	 *  was verified (see ProtobufCGrpc2ClientAuth and
+	 *  ProtobufCGrpc2PeerIdentity), else NULL, as for a cleartext
+	 *  connection or a client without a certificate. Always NULL on the
+	 *  client side. */
 	const char *peer;
 } ProtobufCGrpc2CallInfo;
 

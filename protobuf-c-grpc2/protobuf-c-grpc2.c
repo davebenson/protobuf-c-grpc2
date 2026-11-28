@@ -27,6 +27,7 @@ struct ProtobufCGrpc2Conn {
 	char *authority;
 	char *scheme;
 	size_t max_message_size;
+	char *peer;			/* TLS peer identity, or NULL */
 	Call *calls;			/* all live calls, doubly linked */
 	ClientService *client_services;
 };
@@ -986,6 +987,7 @@ server_auth_begin(Call *c, ProtobufCGrpc2ServerAuth *auth, int fin)
 	info.struct_size = sizeof info;
 	info.service = c->service->descriptor;
 	info.method = c->method;
+	info.peer = c->conn->peer;
 	c->headers_fin = fin;
 	c->auth_state = AUTH_CHECKING;
 	auth->check(auth, &info, headers, n, server_auth_done, c);
@@ -1873,6 +1875,7 @@ protobuf_c_grpc2_conn_free(ProtobufCGrpc2Conn *conn)
 	nghttp2_conn_del(conn->ng);
 	free(conn->authority);
 	free(conn->scheme);
+	free(conn->peer);
 	free(conn);
 }
 
@@ -1970,6 +1973,13 @@ protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn)
 		}
 	}
 	return rv;
+}
+
+void
+protobuf_c_grpc2__conn_set_peer(ProtobufCGrpc2Conn *conn, const char *peer)
+{
+	free(conn->peer);
+	conn->peer = peer != NULL ? xstrdup(peer) : NULL;
 }
 
 /* ------------------------------------------------------------------ */

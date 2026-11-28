@@ -27,6 +27,9 @@ protobuf_c_grpc2__copy_options(void *dst, size_t dst_size, const void *src,
 	protobuf_c_grpc2__copy_options((dst), sizeof *(dst), (src), \
 				       (src)->struct_size)
 
+/* The identity of the TLS peer, once the handshake is done (NULL: none). */
+void protobuf_c_grpc2__conn_set_peer(ProtobufCGrpc2Conn *conn, const char *peer);
+
 /* ---- connection pump (pump.c): moves bytes between an I/O stream, an
  * optional TLS session and a ProtobufCGrpc2Conn. Used by servers and by
  * clients. ---- */

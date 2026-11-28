@@ -13,6 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h>
+
+#include <gnutls/x509.h>
+
 #include "protobuf-c-grpc2-gnutls.h"
 
 #define DEFAULT_PRIORITY "NORMAL:-VERS-ALL:+VERS-TLS1.3:+VERS-TLS1.2"
@@ -21,6 +25,8 @@ typedef struct {
 	ProtobufCGrpc2SecureTransportSystem base;	/* must be first */
 	gnutls_certificate_credentials_t cred;
 	gnutls_priority_t prio;
+	int client_auth;	/* a ProtobufCGrpc2ClientAuth, for servers */
+	int identity_kind;	/* a ProtobufCGrpc2PeerIdentity */
 	int refs;
 	int floating;	/* the creation reference is not yet claimed */
 } GtlsSystem;
@@ -38,6 +44,12 @@ typedef struct {
 	Buf out;		/* ciphertext for the network */
 	int state;		/* 0 handshaking, 1 done, -1 failed/closed */
 	char alpn[16];
+	int is_server;
+	int client_auth;
+	int identity_kind;
+	int verified;		/* the peer's certificate chain verified */
+	int identity_done;	/* `identity` has been worked out */
+	char *identity;
 } GtlsSession;
 
 static int
@@ -129,8 +141,13 @@ advance(GtlsSession *s)
 		rv = gnutls_handshake(s->session);
 		/* interruptions and warning alerts are not errors: go on */
 	} while (rv < 0 && rv != GNUTLS_E_AGAIN && !gnutls_error_is_fatal(rv));
-	if (rv == GNUTLS_E_SUCCESS)
+	if (rv == GNUTLS_E_SUCCESS) {
 		s->state = 1;
+		/* a client's handshake fails unless the server's certificate
+		 * verified (see sys_new_client) */
+		if (!s->is_server)
+			s->verified = 1;
+	}
 	else if (rv != GNUTLS_E_AGAIN)
 		fail(s, rv);
 }
@@ -237,11 +254,116 @@ sess_alpn(ProtobufCGrpc2SecureTransport *t)
 	return s->alpn;
 }
 
+/* A copy of `n` bytes as a string, or NULL if empty or with a NUL in it. */
+static char *
+bytes_to_string(const void *d, size_t n)
+{
+	char *r;
+
+	if (n == 0 || memchr(d, 0, n) != NULL)
+		return NULL;
+	r = malloc(n + 1);
+	if (r != NULL) {
+		memcpy(r, d, n);
+		r[n] = 0;
+	}
+	return r;
+}
+
+/* The first subject alternative name of the given type. */
+static char *
+san_of_type(gnutls_x509_crt_t crt, int type)
+{
+	unsigned i;
+
+	for (i = 0; ; i++) {
+		char buf[512];
+		size_t size = sizeof buf;
+		int t = gnutls_x509_crt_get_subject_alt_name(crt, i, buf, &size, NULL);
+
+		if (t == GNUTLS_E_REQUESTED_DATA_NOT_AVAILABLE)
+			return NULL;	/* no more */
+		if (t < 0)
+			continue;	/* too long, say: skip it */
+		if (t == type)
+			return bytes_to_string(buf, size);
+	}
+}
+
+static char *
+cert_identity(gnutls_x509_crt_t crt, int kind)
+{
+	char *r = NULL;
+
+	if (kind == PROTOBUF_C_GRPC2_PEER_IDENTITY_FINGERPRINT) {
+		unsigned char md[32];
+		size_t n = sizeof md, i;
+
+		if (gnutls_x509_crt_get_fingerprint(crt, GNUTLS_DIG_SHA256, md, &n) != 0)
+			return NULL;
+		r = malloc(2 * n + 1);
+		for (i = 0; r != NULL && i < n; i++)
+			snprintf(r + 2 * i, 3, "%02x", md[i]);
+		return r;
+	}
+	if (kind == PROTOBUF_C_GRPC2_PEER_IDENTITY_SUBJECT) {
+		gnutls_datum_t dn;
+
+		if (gnutls_x509_crt_get_dn3(crt, &dn, 0) != 0)
+			return NULL;
+		r = bytes_to_string(dn.data, dn.size);
+		gnutls_free(dn.data);
+		return r;
+	}
+	if ((r = san_of_type(crt, GNUTLS_SAN_URI)) != NULL ||
+	    (r = san_of_type(crt, GNUTLS_SAN_DNSNAME)) != NULL ||
+	    (r = san_of_type(crt, GNUTLS_SAN_RFC822NAME)) != NULL)
+		return r;
+	{
+		char buf[512];
+		size_t size = sizeof buf;
+
+		if (gnutls_x509_crt_get_dn_by_oid(crt, GNUTLS_OID_X520_COMMON_NAME,
+						  0, 0, buf, &size) == 0)
+			r = bytes_to_string(buf, size);
+	}
+	return r;
+}
+
+static const char *
+sess_peer_identity(ProtobufCGrpc2SecureTransport *t)
+{
+	GtlsSession *s = (GtlsSession *) t;
+
+	if (!s->identity_done && s->state == 1) {
+		unsigned n = 0;
+		const gnutls_datum_t *certs;
+
+		s->identity_done = 1;
+		/* only a certificate that verified says who the peer is */
+		certs = s->verified ? gnutls_certificate_get_peers(s->session, &n)
+				    : NULL;
+		if (certs != NULL && n > 0) {
+			gnutls_x509_crt_t crt;
+
+			if (gnutls_x509_crt_init(&crt) == 0) {
+				if (gnutls_x509_crt_import(crt, &certs[0],
+							   GNUTLS_X509_FMT_DER) == 0)
+					s->identity = cert_identity(crt,
+								    s->identity_kind);
+				gnutls_x509_crt_deinit(crt);
+			}
+		}
+	}
+	return s->identity;
+}
+
 static void
 sess_destroy(ProtobufCGrpc2SecureTransport *t)
 {
 	GtlsSession *s = (GtlsSession *) t;
 
+	free(s->identity);
 	gnutls_deinit(s->session);
 	free(s->in.p);
 	free(s->out.p);
@@ -250,7 +372,8 @@ sess_destroy(ProtobufCGrpc2SecureTransport *t)
 
 static const ProtobufCGrpc2SecureTransportVTable sess_vtable = {
 	sess_feed, sess_read_plaintext, sess_write_plaintext,
-	sess_read_ciphertext, sess_handshake_state, sess_alpn, sess_destroy
+	sess_read_ciphertext, sess_handshake_state, sess_alpn, sess_destroy,
+	sess_peer_identity
 };
 
 static GtlsSession *
@@ -262,6 +385,8 @@ session_new(GtlsSystem *sys, int server)
 	if (s == NULL)
 		return NULL;
 	s->base.vtable = &sess_vtable;
+	s->is_server = server;
+	s->identity_kind = sys->identity_kind;
 	if (gnutls_init(&s->session, server ? GNUTLS_SERVER : GNUTLS_CLIENT) !=
 	    GNUTLS_E_SUCCESS) {
 		free(s);
@@ -279,18 +404,47 @@ session_new(GtlsSystem *sys, int server)
 		free(s);
 		return NULL;
 	}
+	gnutls_session_set_ptr(s->session, s);
 	gnutls_transport_set_ptr(s->session, s);
 	gnutls_transport_set_push_function(s->session, gt_push);
 	gnutls_transport_set_pull_function(s->session, gt_pull);
 	return s;
 }
 
+/* Mutual TLS, server side: runs during the handshake once the client's
+ * certificate has arrived, and fails it if the chain does not verify against
+ * the trust roots of the credentials. */
+static int
+verify_client(gnutls_session_t session)
+{
+	GtlsSession *s = gnutls_session_get_ptr(session);
+	unsigned status;
+	int rv = gnutls_certificate_verify_peers3(session, NULL, &status);
+
+	if (rv == GNUTLS_E_NO_CERTIFICATE_FOUND)
+		return s->client_auth == PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED ? -1 : 0;
+	if (rv < 0 || status != 0)
+		return -1;
+	s->verified = 1;
+	return 0;
+}
+
 static ProtobufCGrpc2SecureTransport *
 sys_new_server(ProtobufCGrpc2SecureTransportSystem *base)
 {
-	GtlsSession *s = session_new((GtlsSystem *) base, 1);
+	GtlsSystem *sys = (GtlsSystem *) base;
+	GtlsSession *s = session_new(sys, 1);
 
-	return s != NULL ? &s->base : NULL;
+	if (s == NULL)
+		return NULL;
+	if (sys->client_auth != PROTOBUF_C_GRPC2_CLIENT_AUTH_NONE) {
+		s->client_auth = sys->client_auth;
+		gnutls_certificate_server_set_request(s->session,
+			sys->client_auth == PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED
+				? GNUTLS_CERT_REQUIRE : GNUTLS_CERT_REQUEST);
+		gnutls_session_set_verify_function(s->session, verify_client);
+	}
+	return &s->base;
 }
 
 static int
@@ -374,12 +528,21 @@ protobuf_c_grpc2_secure_transport_system_new_gnutls(
 	cred = o.credentials;
 	if (cred == NULL)
 		return NULL;
+	if (o.client_auth < PROTOBUF_C_GRPC2_CLIENT_AUTH_NONE ||
+	    o.client_auth > PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED ||
+	    o.peer_identity < PROTOBUF_C_GRPC2_PEER_IDENTITY_AUTO ||
+	    o.peer_identity > PROTOBUF_C_GRPC2_PEER_IDENTITY_FINGERPRINT) {
+		gnutls_certificate_free_credentials(cred);
+		return NULL;
+	}
 	sys = calloc(1, sizeof(*sys));
 	if (sys == NULL) {
 		gnutls_certificate_free_credentials(cred);
 		return NULL;
 	}
 	sys->cred = cred;		/* ours from here on, whatever happens */
+	sys->client_auth = o.client_auth;
+	sys->identity_kind = o.peer_identity;
 	if (gnutls_priority_init(&sys->prio,
 				 o.policy != NULL ? o.policy : DEFAULT_PRIORITY,
 				 NULL) != GNUTLS_E_SUCCESS) {

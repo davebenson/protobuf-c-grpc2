@@ -15,13 +15,19 @@
 #define test_tls_name ossl_name
 #define test_tls_new_server ossl_new_server
 #define test_tls_new_client ossl_new_client
+#define test_tls_new_mtls_server ossl_new_mtls_server
+#define test_tls_new_mtls_client ossl_new_mtls_client
 #include "tls-backend-openssl.c"
 #undef test_tls_name
 #undef test_tls_new_server
 #undef test_tls_new_client
+#undef test_tls_new_mtls_server
+#undef test_tls_new_mtls_client
 #define test_tls_name gtls_name
 #define test_tls_new_server gtls_new_server
 #define test_tls_new_client gtls_new_client
+#define test_tls_new_mtls_server gtls_new_mtls_server
+#define test_tls_new_mtls_client gtls_new_mtls_client
 #include "tls-backend-gnutls.c"
 
 typedef ProtobufCGrpc2SecureTransport Sess;
@@ -128,6 +134,124 @@ pair(const char *what,
 	ss->destroy(ss);
 	bad->destroy(bad);
 	printf("tls-interop: %s ok\n", what);
+}
+
+/* One handshake between a client with certificate `which` and a server
+ * (ProtobufCGrpc2ClientAuth `auth`, identities of kind `kind`). Returns
+ * the server session's peer identity (and fills `*client_sees` with what the
+ * client makes of the server), or NULL, and *ok says whether both ended up
+ * with a working session. The caller destroys the sessions. */
+typedef struct {
+	ProtobufCGrpc2SecureTransportSystem *cs, *ss;
+	Sess *c, *s;
+	int ok;			/* both handshakes completed */
+} Mtls;
+
+static Mtls
+mtls_handshake(ProtobufCGrpc2SecureTransportSystem *(*new_client)(int),
+	       ProtobufCGrpc2SecureTransportSystem *(*new_server)(int, int),
+	       int which, int auth, int kind)
+{
+	ProtobufCGrpc2SecureTransportSystem *cs = new_client(which);
+	ProtobufCGrpc2SecureTransportSystem *ss = new_server(auth, kind);
+	Mtls m;
+
+	cs->ref(cs);
+	ss->ref(ss);
+	m.cs = cs;
+	m.ss = ss;
+	m.c = cs->new_client(cs, "localhost");
+	m.s = ss->new_server(ss);
+	assert(m.c != NULL && m.s != NULL);
+	pump(m.c, m.s);
+	m.ok = m.c->vtable->handshake_state(m.c) == 1 &&
+	       m.s->vtable->handshake_state(m.s) == 1;
+	return m;
+}
+
+static void
+mtls_free(Mtls *m)
+{
+	m->c->vtable->destroy(m->c);
+	m->s->vtable->destroy(m->s);
+	m->cs->destroy(m->cs);
+	m->ss->destroy(m->ss);
+}
+
+static const char *
+identity(Sess *x)
+{
+	return x->vtable->peer_identity(x);
+}
+
+static void
+mtls_pair(const char *what,
+	  ProtobufCGrpc2SecureTransportSystem *(*new_client)(int),
+	  ProtobufCGrpc2SecureTransportSystem *(*new_server)(int, int))
+{
+	const int REQ = PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED;
+	const int OPT = PROTOBUF_C_GRPC2_CLIENT_AUTH_OPTIONAL;
+	const int NONE = PROTOBUF_C_GRPC2_CLIENT_AUTH_NONE;
+	const int AUTO = PROTOBUF_C_GRPC2_PEER_IDENTITY_AUTO;
+	Mtls m;
+
+	/* a client with a trusted certificate: each end knows the other */
+	m = mtls_handshake(new_client, new_server, 1, REQ, AUTO);
+	assert(m.ok);
+	assert(identity(m.s) != NULL && strcmp(identity(m.s), TEST_CLIENT_A_IDENTITY) == 0);
+	assert(identity(m.c) != NULL && strcmp(identity(m.c), "localhost") == 0);
+	transfer(m.c, m.s, 1000, m.c, m.s);
+	mtls_free(&m);
+
+	/* no URI, DNS or e-mail name: the common name */
+	m = mtls_handshake(new_client, new_server, 2, REQ, AUTO);
+	assert(m.ok);
+	assert(identity(m.s) != NULL && strcmp(identity(m.s), TEST_CLIENT_B_IDENTITY) == 0);
+	mtls_free(&m);
+
+	/* the other kinds of identity */
+	m = mtls_handshake(new_client, new_server, 1, REQ,
+			   PROTOBUF_C_GRPC2_PEER_IDENTITY_SUBJECT);
+	assert(m.ok && identity(m.s) != NULL &&
+	       strcmp(identity(m.s), TEST_CLIENT_A_SUBJECT) == 0);
+	mtls_free(&m);
+	m = mtls_handshake(new_client, new_server, 1, REQ,
+			   PROTOBUF_C_GRPC2_PEER_IDENTITY_FINGERPRINT);
+	assert(m.ok && identity(m.s) != NULL &&
+	       strcmp(identity(m.s), TEST_CLIENT_A_FINGERPRINT) == 0);
+	mtls_free(&m);
+
+	/* required, and not given: refused */
+	m = mtls_handshake(new_client, new_server, 0, REQ, AUTO);
+	assert(m.s->vtable->handshake_state(m.s) == -1);
+	mtls_free(&m);
+
+	/* a certificate the server does not trust: refused when required */
+	m = mtls_handshake(new_client, new_server, 3, REQ, AUTO);
+	assert(m.s->vtable->handshake_state(m.s) == -1);
+	mtls_free(&m);
+	/* ... and when optional it is either refused (a client that sends it
+	 * anyway) or, if the client holds it back because it is not on the
+	 * list of CAs that the server accepts, treated as no certificate at all:
+	 * never accepted as an identity */
+	m = mtls_handshake(new_client, new_server, 3, OPT, AUTO);
+	assert(m.s->vtable->handshake_state(m.s) == -1 || identity(m.s) == NULL);
+	mtls_free(&m);
+
+	/* optional, and not given: let in, anonymous */
+	m = mtls_handshake(new_client, new_server, 0, OPT, AUTO);
+	assert(m.ok);
+	assert(identity(m.s) == NULL);
+	assert(identity(m.c) != NULL);		/* the client knows the server */
+	transfer(m.c, m.s, 1000, m.c, m.s);
+	mtls_free(&m);
+
+	/* not asked: a client's certificate is not even looked at */
+	m = mtls_handshake(new_client, new_server, 1, NONE, AUTO);
+	assert(m.ok);
+	assert(identity(m.s) == NULL);
+	mtls_free(&m);
+	printf("tls-interop: mutual TLS %s ok\n", what);
 }
 
 /* The options struct: a zero or too small struct_size, a missing or bad
@@ -243,6 +367,10 @@ main(void)
 	pair("gnutls client, gnutls server", gtls_new_client, gtls_new_server);
 	pair("gnutls client, openssl server", gtls_new_client, ossl_new_server);
 	pair("openssl client, gnutls server", ossl_new_client, gtls_new_server);
+	mtls_pair("openssl client, openssl server", ossl_new_mtls_client, ossl_new_mtls_server);
+	mtls_pair("gnutls client, gnutls server", gtls_new_mtls_client, gtls_new_mtls_server);
+	mtls_pair("gnutls client, openssl server", gtls_new_mtls_client, ossl_new_mtls_server);
+	mtls_pair("openssl client, gnutls server", ossl_new_mtls_client, gtls_new_mtls_server);
 	puts("tls-interop: ok");
 	return 0;
 }

@@ -27,6 +27,25 @@ typedef struct ProtobufCGrpc2OpensslOptions {
 	size_t struct_size;
 	/** Required: the context the sessions are created from. */
 	SSL_CTX *ctx;
+	/**
+	 * Servers: whether to ask clients for a certificate (mutual TLS). Any
+	 * value but NONE sets the context's verify mode accordingly (and so
+	 * replaces a verify callback set before); configure the trust roots
+	 * that client certificates must chain to on the context, with
+	 * SSL_CTX_load_verify_locations() or its X509 store, and, if clients
+	 * need to be told which CAs are acceptable,
+	 * SSL_CTX_set_client_CA_list(). With NONE (the default) the context's
+	 * own verify mode is left alone, so SSL_CTX_set_verify() works too.
+	 * Clients present a certificate if the context has one
+	 * (SSL_CTX_use_certificate() and SSL_CTX_use_PrivateKey()).
+	 */
+	int client_auth;		/* a ProtobufCGrpc2ClientAuth */
+	/**
+	 * What the identity of a verified peer certificate is (see
+	 * ProtobufCGrpc2PeerIdentity). Both ends get one: a server for its
+	 * client, a client for its server, when the certificate verified.
+	 */
+	int peer_identity;		/* a ProtobufCGrpc2PeerIdentity */
 } ProtobufCGrpc2OpensslOptions;
 
 #define PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT \

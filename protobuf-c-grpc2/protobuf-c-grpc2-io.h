@@ -191,6 +191,39 @@ struct ProtobufCGrpc2IoSystem {
 /* Secure transport (TLS) */
 
 /**
+ * Whether a TLS server asks its clients for a certificate (mutual TLS). The
+ * certificate must verify against the trust roots configured with the TLS
+ * library (see the adapter headers); one that does not fails the handshake.
+ */
+typedef enum ProtobufCGrpc2ClientAuth {
+	/** Do not ask: clients are anonymous at the TLS level (the default). */
+	PROTOBUF_C_GRPC2_CLIENT_AUTH_NONE = 0,
+	/** Ask; a client without a certificate is let in (and has no peer
+	 *  identity), one with a bad certificate is not. An authenticator can
+	 *  then decide about the anonymous ones. */
+	PROTOBUF_C_GRPC2_CLIENT_AUTH_OPTIONAL = 1,
+	/** Ask, and refuse clients without a valid certificate. */
+	PROTOBUF_C_GRPC2_CLIENT_AUTH_REQUIRED = 2
+} ProtobufCGrpc2ClientAuth;
+
+/**
+ * What the identity of a verified peer certificate is, as reported through
+ * ProtobufCGrpc2SecureTransportVTable::peer_identity() and, on the server,
+ * ProtobufCGrpc2CallInfo::peer.
+ */
+typedef enum ProtobufCGrpc2PeerIdentity {
+	/** The first URI subject alternative name (a SPIFFE ID, say), else
+	 *  the first DNS name, else the first e-mail address, else the
+	 *  certificate's common name (the default). */
+	PROTOBUF_C_GRPC2_PEER_IDENTITY_AUTO = 0,
+	/** The subject's distinguished name, as in RFC 4514 ("CN=...,O=..."). */
+	PROTOBUF_C_GRPC2_PEER_IDENTITY_SUBJECT = 1,
+	/** The SHA-256 fingerprint of the certificate, in lower case hex:
+	 *  identifies one certificate, for pinning. */
+	PROTOBUF_C_GRPC2_PEER_IDENTITY_FINGERPRINT = 2
+} ProtobufCGrpc2PeerIdentity;
+
+/**
  * One TLS session, driven "sans-I/O" like the HTTP/2 engine: the core moves
  * bytes between the network and the session, and between the session and
  * HTTP/2. Derive from this struct; `vtable` must be the first member.
@@ -222,6 +255,15 @@ struct ProtobufCGrpc2SecureTransportVTable {
 	/** The negotiated ALPN protocol (e.g. "h2"), or NULL. */
 	const char *(*alpn)(ProtobufCGrpc2SecureTransport *t);
 	void (*destroy)(ProtobufCGrpc2SecureTransport *t);
+	/**
+	 * Optional (NULL: no identities). The identity of the peer, as
+	 * established by its certificate, or NULL: the peer presented none, it
+	 * was not verified (a client that does not verify its server, say), or
+	 * none could be derived from it. Called once the handshake is complete
+	 * (handshake_state is 1); the string stays valid until `destroy`. See
+	 * ProtobufCGrpc2PeerIdentity for what the identity is.
+	 */
+	const char *(*peer_identity)(ProtobufCGrpc2SecureTransport *t);
 };
 
 struct ProtobufCGrpc2SecureTransport {

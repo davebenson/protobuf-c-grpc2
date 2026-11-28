@@ -49,6 +49,21 @@ typedef struct ProtobufCGrpc2GnutlsOptions {
 	 * pass is used as is, so it should not enable older versions.
 	 */
 	const char *policy;
+	/**
+	 * Servers: whether to ask clients for a certificate (mutual TLS). The
+	 * certificate chain is verified against the trust roots in
+	 * `credentials` (gnutls_certificate_set_x509_trust_file() and so on),
+	 * and a client that fails is refused. Clients present the certificate
+	 * and key in their `credentials` when a server asks
+	 * (gnutls_certificate_set_x509_key_file()).
+	 */
+	int client_auth;		/* a ProtobufCGrpc2ClientAuth */
+	/**
+	 * What the identity of a verified peer certificate is (see
+	 * ProtobufCGrpc2PeerIdentity). Both ends get one: a server for its
+	 * client, a client for its server, when the certificate verified.
+	 */
+	int peer_identity;		/* a ProtobufCGrpc2PeerIdentity */
 } ProtobufCGrpc2GnutlsOptions;
 
 #define PROTOBUF_C_GRPC2_GNUTLS_OPTIONS_INIT \
@@ -62,8 +77,8 @@ typedef struct ProtobufCGrpc2GnutlsOptions {
  * verifies the server's certificate chain against the trust roots in the
  * credentials, and its name against `server_name`: unlike with the OpenSSL
  * adapter, verification cannot be turned off, so a client needs trust roots
- * (or the server's own certificate) in its credentials. A server does not ask
- * clients for certificates.
+ * (or the server's own certificate) in its credentials. A server asks clients
+ * for certificates only if `client_auth` says so.
  *
  * It is created floating: the first server or client to take it claims the
  * creation reference, and further ones share it.
