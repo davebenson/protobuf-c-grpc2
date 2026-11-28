@@ -38,8 +38,27 @@ extern "C" {
 #endif
 
 /**
- * An I/O system that runs on `dispatch`, or on protobuf_c_rpc_dispatch_default()
- * if `dispatch` is NULL. The dispatch is not owned by the I/O system and must
+ * Options for protobuf_c_grpc2_io_system_new_dispatch(). Like the other
+ * options structs of this library, set `struct_size` to sizeof the struct (the
+ * _INIT macro does) and leave the fields you do not use zeroed.
+ *
+ *   ProtobufCGrpc2DispatchOptions o = PROTOBUF_C_GRPC2_DISPATCH_OPTIONS_INIT;
+ *   o.dispatch = d;                            // or leave NULL: the default
+ *   io = protobuf_c_grpc2_io_system_new_dispatch(&o);
+ */
+typedef struct ProtobufCGrpc2DispatchOptions {
+	/** sizeof(ProtobufCGrpc2DispatchOptions). */
+	size_t struct_size;
+	/** The dispatch to run on; NULL means protobuf_c_rpc_dispatch_default(). */
+	ProtobufCRPCDispatch *dispatch;
+} ProtobufCGrpc2DispatchOptions;
+
+#define PROTOBUF_C_GRPC2_DISPATCH_OPTIONS_INIT \
+	{ sizeof(ProtobufCGrpc2DispatchOptions) }
+
+/**
+ * An I/O system that runs on `options->dispatch` (`options` may be NULL, for
+ * the default dispatch). The dispatch is not owned by the I/O system and must
  * outlive it and the servers and clients that use it.
  *
  * It is created floating: the first server or client to take it claims the
@@ -49,7 +68,7 @@ extern "C" {
  * Returns NULL on failure.
  */
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_dispatch(ProtobufCRPCDispatch *dispatch);
+protobuf_c_grpc2_io_system_new_dispatch(const ProtobufCGrpc2DispatchOptions *options);
 
 #ifdef __cplusplus
 }

@@ -166,24 +166,28 @@ main(int argc, char **argv)
 	uv_loop_t *loop = uv_default_loop();
 	int port = argc > 1 ? atoi(argv[1]) : 50051;
 	ProtobufCGrpc2ServerOptions opts = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
+	ProtobufCGrpc2UvOptions uvo = PROTOBUF_C_GRPC2_UV_OPTIONS_INIT;
 	ProtobufCGrpc2Server *server;
 
 	opts.services = services;
 	opts.n_services = 1;
-	opts.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	uvo.loop = loop;
+	opts.io = protobuf_c_grpc2_io_system_new_uv(&uvo);
 	opts.on_call_done = on_call_done;
 
 	if (argc > 3) {
 #ifdef HAVE_OPENSSL
 		/* Optional TLS: libuv-server PORT CERT.pem KEY.pem */
+		ProtobufCGrpc2OpensslOptions ssl = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 		SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
 		if (SSL_CTX_use_certificate_chain_file(ctx, argv[2]) != 1 ||
 		    SSL_CTX_use_PrivateKey_file(ctx, argv[3], SSL_FILETYPE_PEM) != 1) {
 			fprintf(stderr, "cannot load certificate/key\n");
 			return 1;
 		}
+		ssl.ctx = ctx;
 		opts.secure_transport =
-			protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+			protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);
 		SSL_CTX_free(ctx);	/* the transport holds its own reference */
 #else
 		fprintf(stderr, "built without OpenSSL: no TLS\n");

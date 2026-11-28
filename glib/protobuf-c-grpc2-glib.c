@@ -983,14 +983,19 @@ glib_destroy(ProtobufCGrpc2IoSystem *io)
 }
 
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_glib(GMainContext *context)
+protobuf_c_grpc2_io_system_new_glib(const ProtobufCGrpc2GlibOptions *options)
 {
-	GlibIo *io = calloc(1, sizeof(*io));
+	ProtobufCGrpc2GlibOptions o;
+	GlibIo *io;
+
+	if (protobuf_c_grpc2_options_copy(&o, sizeof o, options) != 0)
+		return NULL;
+	io = calloc(1, sizeof(*io));
 
 	if (io == NULL)
 		return NULL;
-	io->ctx = g_main_context_ref(context != NULL
-				     ? context : g_main_context_default());
+	io->ctx = g_main_context_ref(o.context != NULL
+				     ? o.context : g_main_context_default());
 	io->base.listen = glib_listen;
 	io->base.unlisten = glib_unlisten;
 	io->base.connect = glib_connect;

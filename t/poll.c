@@ -10,6 +10,15 @@
 
 #include "protobuf-c-grpc2/protobuf-c-grpc2-poll.h"
 
+static ProtobufCGrpc2IoSystem *
+new_io(ProtobufCGrpc2PollLoop *loop)
+{
+	ProtobufCGrpc2PollOptions o = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
+
+	o.loop = loop;
+	return protobuf_c_grpc2_io_system_new_poll(&o);
+}
+
 static ProtobufCGrpc2PollLoop *loop;
 static ProtobufCGrpc2IoSystem *io;
 
@@ -190,9 +199,19 @@ test_connect(void)
 int
 main(void)
 {
+	/* options are required, and so is a loop in them */
+	{
+		ProtobufCGrpc2PollOptions none = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
+		ProtobufCGrpc2PollOptions bad = { 0 };
+
+		assert(protobuf_c_grpc2_io_system_new_poll(NULL) == NULL);
+		assert(protobuf_c_grpc2_io_system_new_poll(&none) == NULL);
+		assert(protobuf_c_grpc2_io_system_new_poll(&bad) == NULL);
+	}
+
 	loop = protobuf_c_grpc2_poll_loop_new();
 	assert(loop != NULL);
-	io = protobuf_c_grpc2_io_system_new_poll(loop);
+	io = new_io(loop);
 	assert(io != NULL);
 	io->ref(io);	/* claims the floating creation reference */
 
@@ -208,7 +227,7 @@ main(void)
 
 	/* the first ref claims the creation ref; the second adds one */
 	loop = protobuf_c_grpc2_poll_loop_new();
-	io = protobuf_c_grpc2_io_system_new_poll(loop);
+	io = new_io(loop);
 	io->ref(io);
 	io->ref(io);
 	io->destroy(io);
@@ -218,7 +237,7 @@ main(void)
 
 	/* a system nobody took is freed by one release */
 	loop = protobuf_c_grpc2_poll_loop_new();
-	io = protobuf_c_grpc2_io_system_new_poll(loop);
+	io = new_io(loop);
 	assert(protobuf_c_grpc2_poll_loop_close(loop) == -1);
 	io->destroy(io);
 	assert(protobuf_c_grpc2_poll_loop_close(loop) == 0);

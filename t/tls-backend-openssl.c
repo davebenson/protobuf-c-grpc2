@@ -33,11 +33,13 @@ test_tls_new_server(void)
 	EVP_PKEY *key = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
 	X509 *cert = load_cert(test_server_cert_pem);
 	ProtobufCGrpc2SecureTransportSystem *sys;
+	ProtobufCGrpc2OpensslOptions so = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 
 	assert(key != NULL);
 	assert(SSL_CTX_use_certificate(ctx, cert) == 1);
 	assert(SSL_CTX_use_PrivateKey(ctx, key) == 1);
-	sys = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+	so.ctx = ctx;
+	sys = protobuf_c_grpc2_secure_transport_system_new_openssl(&so);
 	assert(sys != NULL);
 	assert(SSL_CTX_get_min_proto_version(ctx) >= TLS1_2_VERSION);
 	/* the system holds its own reference to the context */
@@ -55,10 +57,12 @@ test_tls_new_client(int trusted)
 	X509 *cert = load_cert(trusted ? test_server_cert_pem
 				       : test_other_cert_pem);
 	ProtobufCGrpc2SecureTransportSystem *sys;
+	ProtobufCGrpc2OpensslOptions so = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 	X509_STORE_add_cert(SSL_CTX_get_cert_store(ctx), cert);
-	sys = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+	so.ctx = ctx;
+	sys = protobuf_c_grpc2_secure_transport_system_new_openssl(&so);
 	assert(sys != NULL);
 	SSL_CTX_free(ctx);
 	X509_free(cert);

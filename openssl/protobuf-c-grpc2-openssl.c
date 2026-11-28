@@ -233,10 +233,18 @@ sys_destroy(ProtobufCGrpc2SecureTransportSystem *base)
 }
 
 ProtobufCGrpc2SecureTransportSystem *
-protobuf_c_grpc2_secure_transport_system_new_openssl(SSL_CTX *ctx)
+protobuf_c_grpc2_secure_transport_system_new_openssl(
+	const ProtobufCGrpc2OpensslOptions *options)
 {
-	OsslSystem *sys = calloc(1, sizeof(*sys));
+	ProtobufCGrpc2OpensslOptions o;
+	OsslSystem *sys;
+	SSL_CTX *ctx;
 
+	if (protobuf_c_grpc2_options_copy(&o, sizeof o, options) != 0 ||
+	    o.ctx == NULL)
+		return NULL;
+	ctx = o.ctx;
+	sys = calloc(1, sizeof(*sys));
 	if (sys == NULL)
 		return NULL;
 	SSL_CTX_up_ref(ctx);

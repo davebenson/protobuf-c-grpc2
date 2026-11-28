@@ -33,8 +33,26 @@ extern "C" {
 #endif
 
 /**
- * An I/O system that runs on `context`, or on g_main_context_default() if
- * `context` is NULL. The I/O system holds a reference to the context; the
+ * Options for protobuf_c_grpc2_io_system_new_glib(). Like the other options
+ * structs of this library, set `struct_size` to sizeof the struct (the _INIT
+ * macro does) and leave the fields you do not use zeroed.
+ *
+ *   ProtobufCGrpc2GlibOptions o = PROTOBUF_C_GRPC2_GLIB_OPTIONS_INIT;
+ *   o.context = my_context;                    // or leave NULL: the default
+ *   io = protobuf_c_grpc2_io_system_new_glib(&o);
+ */
+typedef struct ProtobufCGrpc2GlibOptions {
+	/** sizeof(ProtobufCGrpc2GlibOptions). */
+	size_t struct_size;
+	/** The context to run on; NULL means g_main_context_default(). */
+	GMainContext *context;
+} ProtobufCGrpc2GlibOptions;
+
+#define PROTOBUF_C_GRPC2_GLIB_OPTIONS_INIT { sizeof(ProtobufCGrpc2GlibOptions) }
+
+/**
+ * An I/O system that runs on `options->context` (`options` may be NULL, for
+ * the default context). The I/O system holds a reference to the context; the
  * context must be iterated by whoever wants the servers and clients to run,
  * and must not be destroyed before they are gone (the reference ensures it).
  * Use the I/O system, the servers and the clients only from the thread that
@@ -47,7 +65,7 @@ extern "C" {
  * Returns NULL on failure.
  */
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_glib(GMainContext *context);
+protobuf_c_grpc2_io_system_new_glib(const ProtobufCGrpc2GlibOptions *options);
 
 #ifdef __cplusplus
 }

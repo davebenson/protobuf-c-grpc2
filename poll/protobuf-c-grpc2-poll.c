@@ -1107,9 +1107,17 @@ poll_destroy(ProtobufCGrpc2IoSystem *io)
 }
 
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_poll(ProtobufCGrpc2PollLoop *loop)
+protobuf_c_grpc2_io_system_new_poll(const ProtobufCGrpc2PollOptions *options)
 {
-	PollIo *io = calloc(1, sizeof(*io));
+	ProtobufCGrpc2PollOptions o;
+	ProtobufCGrpc2PollLoop *loop;
+	PollIo *io;
+
+	if (protobuf_c_grpc2_options_copy(&o, sizeof o, options) != 0 ||
+	    o.loop == NULL)
+		return NULL;
+	loop = o.loop;
+	io = calloc(1, sizeof(*io));
 
 	if (io == NULL)
 		return NULL;

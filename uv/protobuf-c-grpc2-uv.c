@@ -516,9 +516,16 @@ uv_destroy_(ProtobufCGrpc2IoSystem *io)
 }
 
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
+protobuf_c_grpc2_io_system_new_uv(const ProtobufCGrpc2UvOptions *options)
 {
-	UvIo *io = calloc(1, sizeof(*io));
+	ProtobufCGrpc2UvOptions o;
+	uv_loop_t *loop;
+	UvIo *io;
+
+	if (protobuf_c_grpc2_options_copy(&o, sizeof o, options) != 0)
+		return NULL;
+	loop = o.loop != NULL ? o.loop : uv_default_loop();
+	io = calloc(1, sizeof(*io));
 
 	if (io == NULL)
 		return NULL;

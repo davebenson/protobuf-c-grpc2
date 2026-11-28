@@ -32,7 +32,10 @@ test_loop_new(void)
 ProtobufCGrpc2IoSystem *
 test_loop_new_io(TestLoop *l)
 {
-	return protobuf_c_grpc2_io_system_new_glib(l->ctx);
+	ProtobufCGrpc2GlibOptions o = PROTOBUF_C_GRPC2_GLIB_OPTIONS_INIT;
+
+	o.context = l->ctx;
+	return protobuf_c_grpc2_io_system_new_glib(&o);
 }
 
 void

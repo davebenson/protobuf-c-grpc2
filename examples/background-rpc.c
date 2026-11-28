@@ -130,6 +130,7 @@ static ProtobufCGrpc2SecureTransportSystem *
 make_server_tls(const RpcThread *r)
 {
 	ProtobufCGrpc2SecureTransportSystem *sts;
+	ProtobufCGrpc2OpensslOptions oo = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 	SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
 
 	if (SSL_CTX_use_certificate_chain_file(ctx, r->cert_file) != 1 ||
@@ -137,7 +138,8 @@ make_server_tls(const RpcThread *r)
 		SSL_CTX_free(ctx);
 		return NULL;
 	}
-	sts = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+	oo.ctx = ctx;
+	sts = protobuf_c_grpc2_secure_transport_system_new_openssl(&oo);
 	SSL_CTX_free(ctx);	/* the transport holds its own reference */
 	return sts;
 }
@@ -146,6 +148,7 @@ static ProtobufCGrpc2SecureTransportSystem *
 make_client_tls(const RpcThread *r)
 {
 	ProtobufCGrpc2SecureTransportSystem *sts;
+	ProtobufCGrpc2OpensslOptions oo = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 	SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 
 	/* the server's own certificate stands in for a CA */
@@ -154,7 +157,8 @@ make_client_tls(const RpcThread *r)
 		return NULL;
 	}
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-	sts = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+	oo.ctx = ctx;
+	sts = protobuf_c_grpc2_secure_transport_system_new_openssl(&oo);
 	SSL_CTX_free(ctx);
 	return sts;
 }
@@ -175,6 +179,7 @@ rpc_thread_main(void *arg)
 	ProtobufCService *services[] = { &greeter.base };
 	ProtobufCGrpc2ServerOptions so = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
 	ProtobufCGrpc2ClientOptions co = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
+	ProtobufCGrpc2PollOptions po = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
 
 	/* 1. the event loop and the I/O system that runs on it. One system
 	 *    serves the server and the client: it is shared, and freed when
@@ -184,7 +189,8 @@ rpc_thread_main(void *arg)
 		rpc_thread_start_failed(r);
 		return NULL;
 	}
-	r->io = protobuf_c_grpc2_io_system_new_poll(r->loop);
+	po.loop = r->loop;
+	r->io = protobuf_c_grpc2_io_system_new_poll(&po);
 	if (r->io == NULL) {
 		rpc_thread_start_failed(r);
 		return NULL;

@@ -17,6 +17,15 @@
 #include "glib-iterate.h"
 
 static GMainContext *ctx;
+
+static ProtobufCGrpc2IoSystem *
+new_io(GMainContext *context)
+{
+	ProtobufCGrpc2GlibOptions o = PROTOBUF_C_GRPC2_GLIB_OPTIONS_INIT;
+
+	o.context = context;
+	return protobuf_c_grpc2_io_system_new_glib(&o);
+}
 static ProtobufCGrpc2IoSystem *io;
 
 /* Something to wait for: a descriptor, a timer or an idle task. */
@@ -336,7 +345,7 @@ int
 main(void)
 {
 	ctx = g_main_context_new();
-	io = protobuf_c_grpc2_io_system_new_glib(ctx);
+	io = new_io(ctx);
 	assert(io != NULL);
 	io->ref(io);	/* claims the floating creation reference */
 
@@ -349,20 +358,27 @@ main(void)
 
 	/* the first ref claims the creation ref; the second adds one (run this
 	 * under a leak checker: the system is freed by the last release) */
-	io = protobuf_c_grpc2_io_system_new_glib(ctx);
+	io = new_io(ctx);
 	io->ref(io);
 	io->ref(io);
 	io->destroy(io);
 	io->destroy(io);
 
 	/* a system nobody took is freed by one release */
-	io = protobuf_c_grpc2_io_system_new_glib(ctx);
+	io = new_io(ctx);
 	io->destroy(io);
 
 	/* NULL: the default context */
-	io = protobuf_c_grpc2_io_system_new_glib(NULL);
+	io = protobuf_c_grpc2_io_system_new_glib(NULL);	/* no options: the default context */
 	assert(io != NULL);
 	io->destroy(io);
+
+	/* an options struct without a usable struct_size is refused */
+	{
+		ProtobufCGrpc2GlibOptions bad = { 0 };
+
+		assert(protobuf_c_grpc2_io_system_new_glib(&bad) == NULL);
+	}
 
 	g_main_context_unref(ctx);
 	puts("glib: ok");

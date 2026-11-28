@@ -55,19 +55,34 @@ many bytes, so a program built against an older version of a struct keeps
 working when fields are added), then set what you need and leave the rest
 zero.
 
+The constructors of the adapters (`protobuf_c_grpc2_io_system_new_uv()`,
+`_poll()`, `_glib()`, `_dispatch()` and
+`protobuf_c_grpc2_secure_transport_system_new_openssl()` / `_gnutls()`) take
+options structs in the same way (`ProtobufCGrpc2UvOptions`,
+`ProtobufCGrpc2PollOptions`, ... with `PROTOBUF_C_GRPC2_*_OPTIONS_INIT`). Those
+for libuv, GLib and the dispatch accept NULL, or a NULL loop, context or
+dispatch, for the default one.
+
 ## Building a server
 
     ProtobufCService *services[] = { &my_service.base };
     ProtobufCGrpc2ServerOptions o = PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT;
     o.services = services;
     o.n_services = 1;
-    o.io = protobuf_c_grpc2_io_system_new_uv(loop);                       /* -uv */
+    ProtobufCGrpc2UvOptions uv = PROTOBUF_C_GRPC2_UV_OPTIONS_INIT;
+    uv.loop = loop;
+    o.io = protobuf_c_grpc2_io_system_new_uv(&uv);                        /* -uv */
+    ProtobufCGrpc2OpensslOptions ssl = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
+    ssl.ctx = ssl_ctx;
     o.secure_transport =                                          /* optional TLS */
-        protobuf_c_grpc2_secure_transport_system_new_openssl(ssl_ctx);   /* -openssl */
+        protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);      /* -openssl */
     ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new(&o);
     protobuf_c_grpc2_server_listen(server, "0.0.0.0", 50051);
     /* ... run the loop ...; then: */
     protobuf_c_grpc2_server_free(server);
+
+Every adapter's constructor takes an options struct of its own, like the ones
+above, so that fields can be added later without breaking callers.
 
 Without `secure_transport` connections are cleartext HTTP/2 (h2c), which is
 what you want behind a TLS-terminating load balancer. With it, TLS is
@@ -86,18 +101,21 @@ TLS library. The core never sees libuv, OpenSSL or GnuTLS.
 ### TLS with OpenSSL
 
 `protobuf-c-grpc2-openssl.h` makes a secure transport system from an
-`SSL_CTX`. It works with any I/O system (it uses memory BIOs, never sockets):
+`SSL_CTX` (given in a `ProtobufCGrpc2OpensslOptions`). It works with any I/O system (it uses memory BIOs, never sockets):
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());          /* a server */
     SSL_CTX_use_certificate_chain_file(ctx, "cert.pem");
     SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM);
-    o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+    ProtobufCGrpc2OpensslOptions ssl = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
+    ssl.ctx = ctx;
+    o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);
     SSL_CTX_free(ctx);                                        /* it keeps its own reference */
 
     SSL_CTX *cctx = SSL_CTX_new(TLS_client_method());         /* a client */
     SSL_CTX_set_default_verify_paths(cctx);                   /* or load_verify_locations */
     SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, NULL);
-    co.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(cctx);
+    ssl.ctx = cctx;
+    co.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);
     SSL_CTX_free(cctx);
 
 Configure certificates, keys, trust roots, verification and the protocol
@@ -143,7 +161,9 @@ yourself. The loop is separate from the I/O systems on it, so a server and a
 client can share one:
 
     ProtobufCGrpc2PollLoop *loop = protobuf_c_grpc2_poll_loop_new();
-    o.io = protobuf_c_grpc2_io_system_new_poll(loop);
+    ProtobufCGrpc2PollOptions po = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
+    po.loop = loop;
+    o.io = protobuf_c_grpc2_io_system_new_poll(&po);
     ...
     protobuf_c_grpc2_poll_loop_run(loop);   /* until idle or _stop(loop) */
 
@@ -160,8 +180,10 @@ A program that already runs `protobuf-c-rpc` services has a
 `ProtobufCRPCDispatch`; `protobuf-c-grpc2-dispatch.h` puts gRPC servers and
 clients on the same one, so a single main-loop serves both:
 
+    ProtobufCGrpc2DispatchOptions dopt = PROTOBUF_C_GRPC2_DISPATCH_OPTIONS_INIT;
     ProtobufCRPCDispatch *d = protobuf_c_rpc_dispatch_default();
-    o.io = protobuf_c_grpc2_io_system_new_dispatch(d);   /* NULL: the default */
+    dopt.dispatch = d;                                   /* NULL: the default */
+    o.io = protobuf_c_grpc2_io_system_new_dispatch(&dopt);
     ...
     for (;;)
       protobuf_c_rpc_dispatch_run(d);
@@ -180,7 +202,9 @@ its first wait. Like the poll adapter it resolves host names with a blocking
 `protobuf-c-grpc2-glib.h` runs servers and clients on a `GMainContext`, so a
 GLib or GTK program serves and calls gRPC from its ordinary main-loop:
 
-    o.io = protobuf_c_grpc2_io_system_new_glib(NULL);   /* the default context */
+    ProtobufCGrpc2GlibOptions gopt = PROTOBUF_C_GRPC2_GLIB_OPTIONS_INIT;
+    gopt.context = NULL;                                /* the default context */
+    o.io = protobuf_c_grpc2_io_system_new_glib(&gopt);
     ...
     g_main_loop_run(loop);
 
@@ -271,8 +295,8 @@ treats as a handle, as `examples/background-rpc.c` does:
     ------                          ----------
     latch_init(&ready);
     pthread_create(rpc_thread_main) loop = protobuf_c_grpc2_poll_loop_new();
-    latch_wait(&ready);             io   = protobuf_c_grpc2_io_system_new_poll(loop);
-                                    sts  = ..._secure_transport_system_new_openssl(ctx);
+    latch_wait(&ready);             io   = protobuf_c_grpc2_io_system_new_poll(&poll_options);
+                                    sts  = ..._secure_transport_system_new_openssl(&ssl_options);
                                     server = protobuf_c_grpc2_server_new(&so);  /* thread_safe */
                                     client = protobuf_c_grpc2_client_new(&co);  /* thread_safe */
                                     latch_signal(&ready);
@@ -302,9 +326,9 @@ connection, and backs off after failed attempts.
     ProtobufCGrpc2ClientOptions o = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
     o.host = "example.com";
     o.port = 50051;
-    o.io = protobuf_c_grpc2_io_system_new_uv(loop);
+    o.io = protobuf_c_grpc2_io_system_new_uv(&uv);     /* options as for the server */
     o.secure_transport =                                          /* optional TLS */
-        protobuf_c_grpc2_secure_transport_system_new_openssl(ssl_ctx);
+        protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);
     ProtobufCGrpc2Client *client = protobuf_c_grpc2_client_new(&o);
     ProtobufCService *svc = protobuf_c_grpc2_client_get_service(client, &desc);
     /* call through svc with the generated callers */

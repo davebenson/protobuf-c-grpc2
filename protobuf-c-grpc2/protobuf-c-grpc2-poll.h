@@ -29,13 +29,31 @@ typedef struct ProtobufCGrpc2PollLoop ProtobufCGrpc2PollLoop;
 ProtobufCGrpc2PollLoop *protobuf_c_grpc2_poll_loop_new(void);
 
 /**
- * An I/O system that runs on `loop`. It is created floating: the first
+ * Options for protobuf_c_grpc2_io_system_new_poll(). Like the other options
+ * structs of this library, set `struct_size` to sizeof the struct (the _INIT
+ * macro does) and leave the fields you do not use zeroed.
+ *
+ *   ProtobufCGrpc2PollOptions o = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
+ *   o.loop = loop;
+ *   io = protobuf_c_grpc2_io_system_new_poll(&o);
+ */
+typedef struct ProtobufCGrpc2PollOptions {
+	/** sizeof(ProtobufCGrpc2PollOptions). */
+	size_t struct_size;
+	/** Required: the loop to run on. */
+	ProtobufCGrpc2PollLoop *loop;
+} ProtobufCGrpc2PollOptions;
+
+#define PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT { sizeof(ProtobufCGrpc2PollOptions) }
+
+/**
+ * An I/O system that runs on `options->loop`. It is created floating: the first
  * server or client to take it claims the creation reference, and further ones
  * share it. If you use it without one, call `ref` and later `destroy`.
  * The loop must outlive it.
  */
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_poll(ProtobufCGrpc2PollLoop *loop);
+protobuf_c_grpc2_io_system_new_poll(const ProtobufCGrpc2PollOptions *options);
 
 /**
  * Run the loop until nothing is left to wait for (no active connection,

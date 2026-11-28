@@ -60,7 +60,10 @@ test_loop_new(void)
 ProtobufCGrpc2IoSystem *
 test_loop_new_io(TestLoop *l)
 {
-	return protobuf_c_grpc2_io_system_new_dispatch(l->d);
+	ProtobufCGrpc2DispatchOptions o = PROTOBUF_C_GRPC2_DISPATCH_OPTIONS_INIT;
+
+	o.dispatch = l->d;
+	return protobuf_c_grpc2_io_system_new_dispatch(&o);
 }
 
 /* Something to wait for: a watched descriptor, a timer or an idle function. */

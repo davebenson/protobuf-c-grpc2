@@ -29,6 +29,15 @@ test_free(void *data, void *ptr)
 static ProtobufCAllocator test_allocator = { test_alloc, test_free, NULL };
 
 static ProtobufCRPCDispatch *d;
+
+static ProtobufCGrpc2IoSystem *
+new_io(ProtobufCRPCDispatch *dispatch)
+{
+	ProtobufCGrpc2DispatchOptions o = PROTOBUF_C_GRPC2_DISPATCH_OPTIONS_INIT;
+
+	o.dispatch = dispatch;
+	return protobuf_c_grpc2_io_system_new_dispatch(&o);
+}
 static ProtobufCGrpc2IoSystem *io;
 
 /* Something to wait for: a watched descriptor, a timer or an idle function. */
@@ -269,7 +278,7 @@ main(void)
 {
 	d = protobuf_c_rpc_dispatch_new(&test_allocator);
 	assert(d != NULL);
-	io = protobuf_c_grpc2_io_system_new_dispatch(d);
+	io = new_io(d);
 	assert(io != NULL);
 	io->ref(io);	/* claims the floating creation reference */
 
@@ -281,21 +290,28 @@ main(void)
 
 	/* the first ref claims the creation ref; the second adds one (run this
 	 * under a leak checker: the system is freed by the last release) */
-	io = protobuf_c_grpc2_io_system_new_dispatch(d);
+	io = new_io(d);
 	io->ref(io);
 	io->ref(io);
 	io->destroy(io);
 	io->destroy(io);
 
 	/* a system nobody took is freed by one release */
-	io = protobuf_c_grpc2_io_system_new_dispatch(d);
+	io = new_io(d);
 	io->destroy(io);
 
 	/* NULL: the default dispatch */
-	io = protobuf_c_grpc2_io_system_new_dispatch(NULL);
+	io = protobuf_c_grpc2_io_system_new_dispatch(NULL);	/* no options: the default */
 	assert(io != NULL);
 	io->destroy(io);
 	protobuf_c_rpc_dispatch_destroy_default();
+
+	/* an options struct without a usable struct_size is refused */
+	{
+		ProtobufCGrpc2DispatchOptions bad = { 0 };
+
+		assert(protobuf_c_grpc2_io_system_new_dispatch(&bad) == NULL);
+	}
 
 	protobuf_c_rpc_dispatch_free(d);
 	puts("dispatch: ok");

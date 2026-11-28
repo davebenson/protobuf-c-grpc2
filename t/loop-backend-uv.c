@@ -28,7 +28,10 @@ test_loop_new(void)
 ProtobufCGrpc2IoSystem *
 test_loop_new_io(TestLoop *l)
 {
-	return protobuf_c_grpc2_io_system_new_uv(&l->loop);
+	ProtobufCGrpc2UvOptions o = PROTOBUF_C_GRPC2_UV_OPTIONS_INIT;
+
+	o.loop = &l->loop;
+	return protobuf_c_grpc2_io_system_new_uv(&o);
 }
 
 void

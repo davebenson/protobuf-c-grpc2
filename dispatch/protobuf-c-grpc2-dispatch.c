@@ -779,13 +779,19 @@ disp_destroy(ProtobufCGrpc2IoSystem *io)
 }
 
 ProtobufCGrpc2IoSystem *
-protobuf_c_grpc2_io_system_new_dispatch(ProtobufCRPCDispatch *dispatch)
+protobuf_c_grpc2_io_system_new_dispatch(const ProtobufCGrpc2DispatchOptions *options)
 {
-	DispIo *io = calloc(1, sizeof(*io));
+	ProtobufCGrpc2DispatchOptions o;
+	DispIo *io;
+
+	if (protobuf_c_grpc2_options_copy(&o, sizeof o, options) != 0)
+		return NULL;
+	io = calloc(1, sizeof(*io));
 
 	if (io == NULL)
 		return NULL;
-	io->d = dispatch != NULL ? dispatch : protobuf_c_rpc_dispatch_default();
+	io->d = o.dispatch != NULL ? o.dispatch
+				    : protobuf_c_rpc_dispatch_default();
 	io->base.listen = disp_listen;
 	io->base.unlisten = disp_unlisten;
 	io->base.connect = disp_connect;

@@ -232,8 +232,8 @@ ProtobufCService *protobuf_c_grpc2_conn_client_service(
  *   ProtobufCService *services[] = { &my_service.base };
  *   o.services = services;
  *   o.n_services = 1;
- *   o.io = protobuf_c_grpc2_io_system_new_uv(loop);            // -uv library
- *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+ *   o.io = protobuf_c_grpc2_io_system_new_uv(&uv_options);    // -uv library
+ *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl_options);
  *   ProtobufCGrpc2Server *server = protobuf_c_grpc2_server_new(&o);
  *   protobuf_c_grpc2_server_listen(server, "0.0.0.0", 50051);
  */
@@ -319,8 +319,8 @@ typedef struct ProtobufCGrpc2Client ProtobufCGrpc2Client;
  *   ProtobufCGrpc2ClientOptions o = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
  *   o.host = "example.com";
  *   o.port = 50051;
- *   o.io = protobuf_c_grpc2_io_system_new_uv(loop);
- *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+ *   o.io = protobuf_c_grpc2_io_system_new_uv(&uv_options);
+ *   o.secure_transport = protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl_options);
  *   ProtobufCGrpc2Client *client = protobuf_c_grpc2_client_new(&o);
  *   ProtobufCService *svc = protobuf_c_grpc2_client_get_service(client, &desc);
  */

@@ -20,11 +20,37 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*
+ * For the constructors of adapters, which take an options struct each (see the
+ * note about options structs in protobuf-c-grpc2.h): copy the caller's struct
+ * into a zeroed, current-size one, reading only as many bytes as the caller's
+ * `struct_size` (the first member) says it has, so that a program built against
+ * an older version keeps working when fields are added. A NULL `src` gives
+ * all defaults. Returns -1 if `src` has no usable `struct_size`.
+ */
+static inline int
+protobuf_c_grpc2_options_copy(void *dst, size_t dst_size, const void *src)
+{
+	size_t src_size;
+
+	memset(dst, 0, dst_size);
+	*(size_t *) dst = dst_size;
+	if (src == NULL)
+		return 0;
+	src_size = *(const size_t *) src;
+	if (src_size < sizeof(size_t))
+		return -1;
+	memcpy(dst, src, src_size < dst_size ? src_size : dst_size);
+	*(size_t *) dst = dst_size;
+	return 0;
+}
 
 typedef struct ProtobufCGrpc2IoSystem ProtobufCGrpc2IoSystem;
 typedef struct ProtobufCGrpc2IoHandler ProtobufCGrpc2IoHandler;

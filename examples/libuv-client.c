@@ -108,25 +108,29 @@ main(int argc, char **argv)
 	unsigned port = argc > 2 ? (unsigned) atoi(argv[2]) : 50051;
 	uv_loop_t *loop = uv_default_loop();
 	ProtobufCGrpc2ClientOptions opts = PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT;
+	ProtobufCGrpc2UvOptions uvo = PROTOBUF_C_GRPC2_UV_OPTIONS_INIT;
 
 	if (argc > 3)
 		name = argv[3];
 
 	opts.host = host;
 	opts.port = port;
-	opts.io = protobuf_c_grpc2_io_system_new_uv(loop);
+	uvo.loop = loop;
+	opts.io = protobuf_c_grpc2_io_system_new_uv(&uvo);
 	opts.on_call_done = on_call_done;
 
 	if (argc > 4) {
 #ifdef HAVE_OPENSSL
+		ProtobufCGrpc2OpensslOptions ssl = PROTOBUF_C_GRPC2_OPENSSL_OPTIONS_INIT;
 		SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 		if (SSL_CTX_load_verify_locations(ctx, argv[4], NULL) != 1) {
 			fprintf(stderr, "cannot load CA file %s\n", argv[4]);
 			return 2;
 		}
 		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+		ssl.ctx = ctx;
 		opts.secure_transport =
-			protobuf_c_grpc2_secure_transport_system_new_openssl(ctx);
+			protobuf_c_grpc2_secure_transport_system_new_openssl(&ssl);
 		SSL_CTX_free(ctx);	/* the transport holds its own reference */
 #else
 		fprintf(stderr, "built without OpenSSL: no TLS\n");

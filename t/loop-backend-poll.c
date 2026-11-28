@@ -31,7 +31,10 @@ test_loop_new(void)
 ProtobufCGrpc2IoSystem *
 test_loop_new_io(TestLoop *l)
 {
-	return protobuf_c_grpc2_io_system_new_poll(l->loop);
+	ProtobufCGrpc2PollOptions o = PROTOBUF_C_GRPC2_POLL_OPTIONS_INIT;
+
+	o.loop = l->loop;
+	return protobuf_c_grpc2_io_system_new_poll(&o);
 }
 
 void
