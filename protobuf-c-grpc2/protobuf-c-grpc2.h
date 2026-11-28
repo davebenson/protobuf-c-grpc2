@@ -24,6 +24,7 @@
 #include <protobuf-c/protobuf-c.h>
 
 #include "protobuf-c-grpc2-io.h"
+#include "protobuf-c-grpc2-auth.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -284,6 +285,13 @@ struct ProtobufCGrpc2ServerOptions {
 	 * is not used again. Calls to one closure must not overlap.
 	 */
 	int thread_safe;
+	/**
+	 * Optional authenticator (see protobuf-c-grpc2-auth.h): every call to a
+	 * known method is checked before its handler runs, and refused with
+	 * the status it gives. Ownership as for `io`. Works without an I/O
+	 * system too, for connections you drive yourself.
+	 */
+	ProtobufCGrpc2ServerAuth *auth;
 };
 
 #define PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT \
@@ -375,6 +383,17 @@ typedef struct ProtobufCGrpc2ClientOptions {
 	 * threads before freeing the client.
 	 */
 	int thread_safe;
+	/**
+	 * Optional call credentials (see protobuf-c-grpc2-auth.h): asked for
+	 * the headers of every call, which waits for the answer before it is
+	 * sent. Ownership as for `io`. Credentials are only attached to
+	 * connections that use TLS: protobuf_c_grpc2_client_new() fails if
+	 * they are given without `secure_transport`, unless
+	 * `allow_insecure_credentials` is set (for a TLS-terminating proxy on
+	 * localhost, say).
+	 */
+	ProtobufCGrpc2CallCredentials *credentials;
+	int allow_insecure_credentials;
 } ProtobufCGrpc2ClientOptions;
 
 #define PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT \

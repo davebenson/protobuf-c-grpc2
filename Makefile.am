@@ -22,7 +22,7 @@ EXTRA_DIST = CMakeLists.txt \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
-	t/threads.c t/threads-server.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
+	t/threads.c t/threads-server.c t/auth.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
 	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh examples/background-rpc.c \
@@ -34,12 +34,14 @@ libprotobuf_c_grpc2_la_SOURCES = \
 	protobuf-c-grpc2/protobuf-c-grpc2.c \
 	protobuf-c-grpc2/protobuf-c-grpc2-pump.c \
 	protobuf-c-grpc2/protobuf-c-grpc2-server.c \
-	protobuf-c-grpc2/protobuf-c-grpc2-client.c
+	protobuf-c-grpc2/protobuf-c-grpc2-client.c \
+	protobuf-c-grpc2/protobuf-c-grpc2-auth.c
 libprotobuf_c_grpc2_la_LIBADD = $(PROTOBUF_C_LIBS) $(NGHTTP2V2_LIBS)
 libprotobuf_c_grpc2_la_LDFLAGS = -version-info 0:0:0 -no-undefined
 grpc2include_HEADERS += \
 	protobuf-c-grpc2/protobuf-c-grpc2.h \
-	protobuf-c-grpc2/protobuf-c-grpc2-io.h
+	protobuf-c-grpc2/protobuf-c-grpc2-io.h \
+	protobuf-c-grpc2/protobuf-c-grpc2-auth.h
 pkgconfig_DATA += libprotobuf-c-grpc2.pc
 
 # ---- libuv adapter ----
@@ -264,6 +266,47 @@ t_test_threads_server_glib_SOURCES = t/threads-server.c t/loop-backend-glib.c
 nodist_t_test_threads_server_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_threads_server_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_threads_server_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+endif
+# authentication, on every backend
+if BUILD_UV_TESTS
+check_PROGRAMS += t/test-auth-uv
+TESTS += t/test-auth-uv
+t_test_auth_uv_SOURCES = t/auth.c t/loop-backend-uv.c
+nodist_t_test_auth_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_auth_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_auth_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+endif
+if BUILD_POLL_TESTS
+check_PROGRAMS += t/test-auth-poll
+TESTS += t/test-auth-poll
+t_test_auth_poll_SOURCES = t/auth.c t/loop-backend-poll.c
+nodist_t_test_auth_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_auth_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_auth_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+endif
+if BUILD_GLIB_TESTS
+check_PROGRAMS += t/test-auth-glib
+TESTS += t/test-auth-glib
+t_test_auth_glib_SOURCES = t/auth.c t/loop-backend-glib.c
+nodist_t_test_auth_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_auth_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_auth_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+endif
+if BUILD_DISPATCH_TESTS
+check_PROGRAMS += t/test-auth-dispatch
+TESTS += t/test-auth-dispatch
+t_test_auth_dispatch_SOURCES = t/auth.c t/loop-backend-dispatch.c
+nodist_t_test_auth_dispatch_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_auth_dispatch_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_auth_dispatch_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
+endif
+if BUILD_DISPATCH_TESTS
+check_PROGRAMS += t/test-auth-dispatch-embed
+TESTS += t/test-auth-dispatch-embed
+t_test_auth_dispatch_embed_SOURCES = t/auth.c t/loop-backend-dispatch-embed.c
+nodist_t_test_auth_dispatch_embed_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_auth_dispatch_embed_CPPFLAGS = $(AM_CPPFLAGS) $(PROTOBUF_C_RPC_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_auth_dispatch_embed_LDADD = libprotobuf-c-grpc2-dispatch.la libprotobuf-c-grpc2.la $(PROTOBUF_C_RPC_LIBS) $(PROTOBUF_C_LIBS)
 endif
 if BUILD_GLIB_ENDPOINTS_TEST
 check_PROGRAMS += t/test-endpoints-glib

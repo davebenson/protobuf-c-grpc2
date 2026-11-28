@@ -95,7 +95,8 @@ add_library(protobuf-c-grpc2
   protobuf-c-grpc2/protobuf-c-grpc2.c
   protobuf-c-grpc2/protobuf-c-grpc2-pump.c
   protobuf-c-grpc2/protobuf-c-grpc2-server.c
-  protobuf-c-grpc2/protobuf-c-grpc2-client.c)
+  protobuf-c-grpc2/protobuf-c-grpc2-client.c
+  protobuf-c-grpc2/protobuf-c-grpc2-auth.c)
 target_include_directories(protobuf-c-grpc2 PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/protobuf-c-grpc2>
@@ -112,6 +113,7 @@ install(TARGETS protobuf-c-grpc2
 install(FILES
   protobuf-c-grpc2/protobuf-c-grpc2.h
   protobuf-c-grpc2/protobuf-c-grpc2-io.h
+  protobuf-c-grpc2/protobuf-c-grpc2-auth.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/protobuf-c-grpc2)
 grpc2_pc(protobuf-c-grpc2)
 
@@ -352,6 +354,16 @@ if(BUILD_TESTS)
         COMMAND test-threads-server-${backend})
       set_tests_properties(threads-server-${backend} PROPERTIES TIMEOUT 60)
     endif()
+
+    add_executable(test-auth-${backend} t/auth.c
+      t/loop-backend-${backend}.c
+      ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+    target_include_directories(test-auth-${backend} PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/t
+      ${CMAKE_CURRENT_BINARY_DIR}/examples)
+    target_link_libraries(test-auth-${backend} protobuf-c-grpc2-${lib})
+    add_test(NAME auth-${backend} COMMAND test-auth-${backend})
+    set_tests_properties(auth-${backend} PROPERTIES TIMEOUT 60)
 
     add_executable(test-client-${backend} t/client.c
       t/loop-backend-${backend}.c

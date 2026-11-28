@@ -317,6 +317,62 @@ as a test) with the poll adapter, so it needs nothing but this library; any
 adapter whose I/O system has `post` works the same way. Give it a certificate
 and key to run the same thing over TLS.
 
+## Authentication
+
+`protobuf-c-grpc2-auth.h` has two small plugin interfaces, one for each end,
+that need no TLS or loop library.
+
+**Clients** get *call credentials*: before each call is sent the client asks
+the credentials for its headers, normally `authorization: Bearer <token>`:
+
+    ProtobufCGrpc2BearerCredentialsOptions bc = PROTOBUF_C_GRPC2_BEARER_CREDENTIALS_OPTIONS_INIT;
+    bc.token = "s3cret";
+    co.credentials = protobuf_c_grpc2_call_credentials_new_bearer(&bc);
+
+Your own `ProtobufCGrpc2CallCredentials` implements `get(self, io, info, done,
+done_data)` and answers by calling `done(done_data, status, message, headers,
+n)`: with the headers to send, or with an error status (say `UNAVAILABLE` when
+the token service is down) that fails the call. This is where a token is
+fetched or refreshed: `done` may be called before `get` returns, in which case
+nothing is deferred, or later, from the loop thread, and the call waits for it
+meanwhile (its deadline keeps running). `info` says which service and method
+the call is for. Credentials are attached only to TLS connections:
+`protobuf_c_grpc2_client_new()` refuses them without a `secure_transport`
+unless `allow_insecure_credentials` is set. Credential headers are sent with
+HPACK's "never index" flag, and the library never logs header values.
+
+**Servers** get an *authenticator*, checked after the method is known and
+before anything is parsed or any handler runs:
+
+    static void verify(void *user_data, const char *token,
+                       const ProtobufCGrpc2CallInfo *info,
+                       ProtobufCGrpc2AuthDone done, void *done_data)
+    {
+        if (token_is_valid(token))
+            done(done_data, PROTOBUF_C_GRPC2_OK, NULL, "alice");   /* the principal */
+        else
+            done(done_data, PROTOBUF_C_GRPC2_UNAUTHENTICATED, "bad token", NULL);
+    }
+    ProtobufCGrpc2BearerAuthOptions ba = PROTOBUF_C_GRPC2_BEARER_AUTH_OPTIONS_INIT;
+    ba.verify = verify;
+    so.auth = protobuf_c_grpc2_server_auth_new_bearer(&ba);
+
+A call without a bearer token is answered `UNAUTHENTICATED` without asking
+`verify`; any other status (`PERMISSION_DENIED`...) ends the call with it and
+the handler is never invoked. The answer may come at once, as above, which is
+the fast path and costs nothing extra, or later (checking a token with another
+service, say): then the request data that arrives meanwhile is held, with its
+flow-control credit kept back so that it never exceeds one window, and
+replayed when the answer is in; the call's deadline keeps running. A handler
+reads the identity the authenticator gave with
+`protobuf_c_grpc2_current_call_principal()`, valid only during its `invoke`
+call. For more than a bearer token, implement `ProtobufCGrpc2ServerAuth`
+yourself: `header_names` lists the request headers you want to see
+(default `authorization`), and `check()` gets them with the call's `info`
+(whose `peer` will carry the TLS peer's identity once the TLS adapters provide
+it). Hooks answer from the loop thread; to decide in another thread, post the
+answer back with the I/O system's `post`.
+
 ## Building a client
 
 A client is a "channel" to one server: it connects lazily on the first call
@@ -431,7 +487,8 @@ is available.
 of their own and calls the client from several threads (see "Running RPC in a
 thread you can ignore"); it needs only the poll adapter, and runs as a test.
 
-Limitations: no message compression, no metadata API, and no cancellation
+Limitations: no message compression, no general metadata API (only the
+authentication headers above), and no cancellation
 or deadline notification for handlers. The client has no retries, load
 balancing or name-resolution policies, and uses a single connection. Apart
 from thread safe clients and servers, nothing is thread safe.

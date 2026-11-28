@@ -91,9 +91,16 @@ struct ProtobufCGrpc2Server {
 	void *hook;
 	int shutting_down;
 	ServerShared *shared;		/* thread_safe servers only */
+
+	/* optional authenticator; the lower case names of the headers it wants
+	 * are copied here */
+	ProtobufCGrpc2ServerAuth *auth;
+	char **auth_names;
+	size_t n_auth_names;
 };
 
 /* server.c */
+void protobuf_c_grpc2__server_release_auth(ProtobufCGrpc2Server *server);
 void protobuf_c_grpc2__server_shared_unref(ServerShared *shared);
 /* The closure to give a handler instead of the call's own, for a thread_safe
  * server: NULL (and the call carries on) if it cannot be allocated. */
@@ -112,6 +119,11 @@ void protobuf_c_grpc2__server_io_free(ProtobufCGrpc2Server *server);
 ProtobufCGrpc2Conn *protobuf_c_grpc2__client_acquire_conn(
 	ProtobufCGrpc2Client *client);
 const ProtobufCGrpc2ConnOptions *protobuf_c_grpc2__client_options(
+	const ProtobufCGrpc2Client *client);
+/* the client's call credentials and I/O system (NULL: no credentials) */
+ProtobufCGrpc2CallCredentials *protobuf_c_grpc2__client_credentials(
+	const ProtobufCGrpc2Client *client);
+ProtobufCGrpc2IoSystem *protobuf_c_grpc2__client_io(
 	const ProtobufCGrpc2Client *client);
 
 /* A thread_safe client, called from a thread other than its home thread. */

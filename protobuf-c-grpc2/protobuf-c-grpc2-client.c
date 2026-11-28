@@ -39,6 +39,7 @@ enum { C_IDLE, C_CONNECTING, C_READY, C_BACKOFF };
 struct ProtobufCGrpc2Client {
 	ProtobufCGrpc2IoSystem *io;
 	ProtobufCGrpc2SecureTransportSystem *sts;
+	ProtobufCGrpc2CallCredentials *credentials;
 	char *host;
 	unsigned port;
 	char *server_name;
@@ -75,6 +76,18 @@ protobuf_c_grpc2__client_options(const ProtobufCGrpc2Client *client)
 	return &client->options;
 }
 
+ProtobufCGrpc2CallCredentials *
+protobuf_c_grpc2__client_credentials(const ProtobufCGrpc2Client *client)
+{
+	return client->credentials;
+}
+
+ProtobufCGrpc2IoSystem *
+protobuf_c_grpc2__client_io(const ProtobufCGrpc2Client *client)
+{
+	return client->io;
+}
+
 ProtobufCGrpc2Client *
 protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 {
@@ -88,6 +101,12 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 	if (o.io == NULL || o.host == NULL)
 		return NULL;
 	if (o.thread_safe && o.io->post == NULL)
+		return NULL;
+	/* credentials would travel in the clear */
+	if (o.credentials != NULL && o.credentials->get == NULL)
+		return NULL;
+	if (o.credentials != NULL && o.secure_transport == NULL &&
+	    !o.allow_insecure_credentials)
 		return NULL;
 	c = calloc(1, sizeof(*c));
 	if (c == NULL)
@@ -142,6 +161,9 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 	c->sts = o.secure_transport;
 	if (c->sts != NULL && c->sts->ref != NULL)
 		c->sts->ref(c->sts);	/* else ownership is transferred */
+	c->credentials = o.credentials;
+	if (c->credentials != NULL && c->credentials->ref != NULL)
+		c->credentials->ref(c->credentials);	/* else transferred */
 	c->state = C_IDLE;
 	return c;
 }
@@ -198,6 +220,8 @@ client_finalize_if_done(ProtobufCGrpc2Client *c)
 		c->io->destroy(c->io);
 	if (c->sts != NULL && c->sts->destroy != NULL)
 		c->sts->destroy(c->sts);
+	if (c->credentials != NULL && c->credentials->destroy != NULL)
+		c->credentials->destroy(c->credentials);
 	for (i = 0; i < c->n_handles; i++)
 		protobuf_c_grpc2__client_service_free(c->handles[i]);
 	free(c->handles);

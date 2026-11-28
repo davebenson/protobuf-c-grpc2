@@ -40,6 +40,23 @@ struct ClientService {
 	ClientService *next;
 };
 
+/* Call::auth_state: the authenticator's verdict for a server call */
+enum {
+	AUTH_NONE,		/* no authenticator, or not asked yet */
+	AUTH_CHECKING,		/* inside check(): a reply now is the fast path */
+	AUTH_REPLIED,		/* the reply came before check() returned */
+	AUTH_PENDING,		/* check() returned, the reply is awaited */
+	AUTH_DONE
+};
+
+/* Call::cred_state: the same for the credentials of a client call */
+enum {
+	CRED_NONE,
+	CRED_CHECKING,
+	CRED_PENDING,
+	CRED_DONE
+};
+
 /* The request side of a client call, handed to the application. */
 typedef struct {
 	ProtobufCInputStream base;
@@ -100,6 +117,23 @@ struct Call {
 	ProtobufCInputStream *sink;	/* input stream from the handler */
 	int in_sink_send;		/* inside sink->send(msg) */
 	int sink_end_pending;		/* end it when that returns */
+
+	/* server: authentication (see server_auth_begin) */
+	char **auth_names, **auth_values;	/* requested headers received */
+	size_t n_auth_headers;
+	int auth_state;			/* AUTH_* */
+	int auth_status;		/* the verdict, when it came in the hook */
+	char *auth_message;
+	char *principal;		/* the identity the authenticator gave */
+	uint8_t *held;			/* request data received while waiting */
+	size_t held_len, held_cap;
+	int headers_fin;		/* the request headers ended the stream */
+
+	/* client: what is needed to send the request once the credentials
+	 * are in (see client_submit) */
+	char *req_path;
+	uint64_t req_timeout_ms;
+	int cred_state;			/* CRED_* */
 
 	/* client side */
 	ProtobufCClosure closure;
@@ -344,6 +378,20 @@ call_unref(Call *c)
 	free(c->msg);
 	free(c->path);
 	free(c->grpc_message);
+	{
+		size_t i;
+
+		for (i = 0; i < c->n_auth_headers; i++) {
+			free(c->auth_names[i]);
+			free(c->auth_values[i]);
+		}
+		free(c->auth_names);
+		free(c->auth_values);
+	}
+	free(c->auth_message);
+	free(c->principal);
+	free(c->held);
+	free(c->req_path);
 	if (c->request != NULL)
 		protobuf_c_message_free_unpacked(c->request, NULL);
 	free(c);
@@ -388,7 +436,8 @@ call_queue_message(Call *c, const ProtobufCMessage *msg)
 	p[4] = (uint8_t) size;
 	protobuf_c_message_pack(msg, p + FRAME_HEADER_LEN);
 	c->pend_len += FRAME_HEADER_LEN + size;
-	nghttp2_conn_resume_stream(c->conn->ng, c->stream_id);
+	if (c->stream_id >= 0)		/* else not submitted yet: it is sent then */
+		nghttp2_conn_resume_stream(c->conn->ng, c->stream_id);
 	return 0;
 }
 
@@ -398,7 +447,7 @@ call_finish_output(Call *c)
 	if (c->out_finished)
 		return;
 	c->out_finished = 1;
-	if (c->conn != NULL && !c->stream_gone)
+	if (c->conn != NULL && !c->stream_gone && c->stream_id >= 0)
 		nghttp2_conn_resume_stream(c->conn->ng, c->stream_id);
 }
 
@@ -672,9 +721,18 @@ protobuf_c_grpc2__server_respond(Call *c, const ProtobufCMessage *msg)
 	server_closure(msg, c);
 }
 
+static _Thread_local const char *current_principal;
+
+const char *
+protobuf_c_grpc2_current_call_principal(void)
+{
+	return current_principal;
+}
+
 static void
 server_invoke(Call *c, const ProtobufCMessage *input)
 {
+	const char *saved_principal = current_principal;
 	ProtobufCClosure closure = (ProtobufCClosure) server_closure;
 	void *closure_data = c;
 
@@ -693,9 +751,11 @@ server_invoke(Call *c, const ProtobufCMessage *input)
 			closure_data = safe;
 		}
 	}
+	current_principal = c->principal;
 	c->sink = c->service->invoke(c->service,
 				     c->method_index | c->stream_flags, input,
 				     closure, closure_data);
+	current_principal = saved_principal;
 }
 
 /* A complete request message arrived. */
@@ -740,12 +800,11 @@ server_on_message(Call *c, const uint8_t *data, size_t len)
 	return 0;
 }
 
+/* The request is complete (and the call dispatched): carry on according to
+ * the kind of method. */
 static void
-server_on_remote_end(Call *c)
+server_handle_remote_end(Call *c)
 {
-	if (c->remote_ended)
-		return;
-	c->remote_ended = 1;
 	if (c->done || !c->dispatched)
 		return;
 	if (c->fhdr_got != 0 || c->in_msg) {
@@ -764,6 +823,15 @@ server_on_remote_end(Call *c)
 		server_invoke(c, request);
 		protobuf_c_message_free_unpacked(request, NULL);
 	}
+}
+
+static void
+server_on_remote_end(Call *c)
+{
+	if (c->remote_ended)
+		return;
+	c->remote_ended = 1;
+	server_handle_remote_end(c);
 }
 
 /* The deadline is the client's grpc-timeout (capped by max_timeout_ms), or
@@ -787,6 +855,149 @@ server_arm_deadline(Call *c)
 	c->deadline_ns = add_sat(now_ns(), timeout_ns);
 	if (c->deadline_ns == 0)
 		c->deadline_ns = 1;
+}
+
+/* ---- authentication of server calls ----
+ *
+ * After the method is found, an authenticator (if the server has one) is
+ * asked. If it answers before check() returns, which is the cheap and common
+ * case, the call carries on from there with nothing allocated or deferred. If
+ * not, the call waits: the data that arrives meanwhile is held (and the flow
+ * control credit for it kept back, so that it is bounded by one window) until
+ * the verdict is in, then replayed. */
+
+#define HELD_MAX ((size_t) 1024 * 1024)
+
+/* Take what was held, giving the flow-control credit back. The caller owns
+ * the returned bytes. */
+static uint8_t *
+server_take_held(Call *c, size_t *len)
+{
+	uint8_t *data = c->held;
+
+	*len = c->held_len;
+	c->held = NULL;
+	c->held_len = c->held_cap = 0;
+	if (*len > 0 && c->conn != NULL && c->conn->ng != NULL) {
+		if (!c->stream_gone)
+			nghttp2_conn_extend_max_stream_offset(c->conn->ng,
+							      c->stream_id, *len);
+		nghttp2_conn_extend_max_offset(c->conn->ng, *len);
+	}
+	return data;
+}
+
+/* The call may go ahead: reply, invoke the handler, replay what was held. */
+static void
+server_start_dispatch(Call *c, int fin)
+{
+	c->dispatched = 1;
+	server_reply_headers(c);
+	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
+		server_invoke(c, NULL);
+		if (c->sink == NULL && !c->done)
+			server_finish(c, PROTOBUF_C_GRPC2_INTERNAL, "no input stream");
+	}
+	if (c->held_len > 0) {
+		size_t len;
+		uint8_t *data = server_take_held(c, &len);
+
+		if (!c->done) {
+			int rv = call_feed(c, data, len, server_on_message);
+
+			if (rv != 0)
+				server_finish(c, rv, "bad request message");
+		}
+		free(data);
+	}
+	if (c->remote_ended)
+		server_handle_remote_end(c);
+	else if (fin)
+		server_on_remote_end(c);
+}
+
+/* The verdict is in c->auth_status, c->auth_message and c->principal. */
+static void
+server_auth_verdict(Call *c)
+{
+	if (c->done || c->conn == NULL) {	/* nobody is waiting any more */
+		size_t len;
+
+		free(server_take_held(c, &len));
+		return;
+	}
+	if (c->auth_status != PROTOBUF_C_GRPC2_OK) {
+		size_t len;
+
+		free(server_take_held(c, &len));
+		server_finish(c, c->auth_status,
+			      c->auth_message != NULL ? c->auth_message
+						      : "not authorized");
+		return;
+	}
+	server_start_dispatch(c, c->headers_fin);
+}
+
+/* What the authenticator calls. */
+static void
+server_auth_done(void *data, int status, const char *message,
+		 const char *principal)
+{
+	Call *c = data;
+	int fast = c->auth_state == AUTH_CHECKING;
+
+	if (!fast && c->auth_state != AUTH_PENDING)
+		return;				/* answered twice: ignore */
+	c->auth_status = status;
+	free(c->auth_message);
+	c->auth_message = message != NULL ? xstrdup(message) : NULL;
+	free(c->principal);
+	c->principal = (status == PROTOBUF_C_GRPC2_OK && principal != NULL)
+		? xstrdup(principal) : NULL;
+	if (fast) {
+		c->auth_state = AUTH_REPLIED;	/* check() has not returned yet */
+		return;
+	}
+	c->auth_state = AUTH_DONE;
+	server_auth_verdict(c);
+	call_unref(c);				/* the reference taken when it went pending */
+}
+
+static void
+server_auth_begin(Call *c, ProtobufCGrpc2ServerAuth *auth, int fin)
+{
+	ProtobufCGrpc2Header small[8], *headers = small;
+	ProtobufCGrpc2CallInfo info;
+	size_t i, n = c->n_auth_headers;
+
+	if (n > sizeof small / sizeof small[0]) {
+		headers = malloc(n * sizeof(*headers));
+		if (headers == NULL) {
+			server_finish(c, PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED,
+				      "out of memory");
+			return;
+		}
+	}
+	for (i = 0; i < n; i++) {
+		headers[i].name = c->auth_names[i];
+		headers[i].value = c->auth_values[i];
+	}
+	memset(&info, 0, sizeof info);
+	info.struct_size = sizeof info;
+	info.service = c->service->descriptor;
+	info.method = c->method;
+	c->headers_fin = fin;
+	c->auth_state = AUTH_CHECKING;
+	auth->check(auth, &info, headers, n, server_auth_done, c);
+	if (headers != small)
+		free(headers);
+	if (c->auth_state == AUTH_REPLIED) {	/* the fast path */
+		c->auth_state = AUTH_DONE;
+		server_auth_verdict(c);
+		return;
+	}
+	c->auth_state = AUTH_PENDING;
+	c->refs++;				/* held until the answer comes */
 }
 
 /* Request headers are complete: validate and look up the method. */
@@ -838,15 +1049,11 @@ server_on_headers_end(Call *c, int fin)
 	return;
 
 found:
-	c->dispatched = 1;
-	server_reply_headers(c);
-	if (c->stream_flags & PROTOBUF_C_INPUT_STREAMING) {
-		server_invoke(c, NULL);
-		if (c->sink == NULL && !c->done)
-			server_finish(c, PROTOBUF_C_GRPC2_INTERNAL, "no input stream");
+	if (srv->auth != NULL) {
+		server_auth_begin(c, srv->auth, fin);
+		return;
 	}
-	if (fin)
-		server_on_remote_end(c);
+	server_start_dispatch(c, fin);
 }
 
 /* ------------------------------------------------------------------ */
@@ -960,6 +1167,134 @@ client_sink_send(ProtobufCInputStream *s, const ProtobufCMessage *msg)
 	return ok;
 }
 
+/* ---- sending a client call's request ----
+ *
+ * The request is submitted to nghttp2 either at once, or, when the client has
+ * call credentials, from their `done` function (which may be called before
+ * `get` returns: then it all happens inside the invoke, as without
+ * credentials). The headers of the call come from the Call, so that they
+ * survive the wait. */
+
+/* A header the credentials may supply: lower case, no pseudo-headers, nothing
+ * that the library sets itself, and a value that fits on one line. */
+static int
+credential_header_ok(const ProtobufCGrpc2Header *h)
+{
+	const char *p;
+
+	if (h->name == NULL || h->value == NULL || h->name[0] == 0 ||
+	    h->name[0] == ':' || strncmp(h->name, "grpc-", 5) == 0 ||
+	    strcmp(h->name, "content-type") == 0 || strcmp(h->name, "te") == 0 ||
+	    strcmp(h->name, "user-agent") == 0)
+		return 0;
+	for (p = h->name; *p != 0; p++)
+		if (*p <= ' ' || *p >= 127 || (*p >= 'A' && *p <= 'Z') || *p == ':')
+			return 0;
+	for (p = h->value; *p != 0; p++)
+		if ((unsigned char) *p < ' ' && *p != '\t')
+			return 0;
+	return 1;
+}
+
+/* Submit the request with the extra headers; returns the stream id or a
+ * negative nghttp2 error. */
+static int64_t
+client_submit(Call *c, const ProtobufCGrpc2Header *extra, size_t n_extra)
+{
+	ProtobufCGrpc2Conn *conn = c->conn;
+	nghttp2_nv small[16], *nva = small;
+	size_t nnv = 0, i;
+	char timeout_hdr[16];
+	nghttp2_data_reader dr;
+	int64_t sid;
+
+	if (n_extra + 8 > sizeof small / sizeof small[0]) {
+		nva = malloc((n_extra + 8) * sizeof(*nva));
+		if (nva == NULL)
+			return NGHTTP2_ERR_NOMEM;
+	}
+	nva[nnv++] = nv_lit(":method", "POST");
+	nva[nnv++] = nv_lit(":scheme", conn->scheme);
+	nva[nnv++] = nv_lit(":path", c->req_path);
+	nva[nnv++] = nv_lit(":authority", conn->authority);
+	if (c->req_timeout_ms > 0) {
+		/* the spec wants grpc-timeout right after the pseudo-headers */
+		format_grpc_timeout(c->req_timeout_ms, timeout_hdr);
+		nva[nnv++] = nv_lit("grpc-timeout", timeout_hdr);
+	}
+	nva[nnv++] = nv_lit("content-type", "application/grpc");
+	nva[nnv++] = nv_lit("te", "trailers");
+	nva[nnv++] = nv_lit("user-agent", "protobuf-c-grpc2");
+	for (i = 0; i < n_extra; i++) {
+		nghttp2_nv *nv = &nva[nnv++];
+
+		nv->name = (const uint8_t *) extra[i].name;
+		nv->namelen = strlen(extra[i].name);
+		nv->value = (const uint8_t *) extra[i].value;
+		nv->valuelen = strlen(extra[i].value);
+		nv->flags = NGHTTP2_NV_FLAG_NEVER_INDEX;	/* both are copied */
+	}
+	dr.read_data = read_data_cb;
+	sid = nghttp2_conn_submit_request(conn->ng, nva, nnv, &dr, c);
+	if (nva != small)
+		free(nva);
+	return sid;
+}
+
+/* The call cannot be sent. If the stream's reference is still held, `drop` it:
+ * the invoke does that itself when this is called from inside it. */
+static void
+client_fail_unsent(Call *c, int status, const char *message, int drop)
+{
+	int had_stream_ref = !c->stream_gone;
+
+	c->stream_gone = 1;		/* there never was a stream */
+	client_complete(c, status, message);
+	if (drop && had_stream_ref)
+		call_unref(c);
+}
+
+/* What the credentials call. */
+static void
+client_credentials_done(void *data, int status, const char *message,
+			const ProtobufCGrpc2Header *headers, size_t n_headers)
+{
+	Call *c = data;
+	int fast = c->cred_state == CRED_CHECKING;
+	size_t i;
+	int64_t sid;
+
+	if (!fast && c->cred_state != CRED_PENDING)
+		return;				/* answered twice: ignore */
+	c->cred_state = CRED_DONE;
+	if (c->done || c->conn == NULL)
+		goto out;		/* nobody is waiting any more */
+	if (status == PROTOBUF_C_GRPC2_OK) {
+		for (i = 0; i < n_headers; i++)
+			if (!credential_header_ok(&headers[i])) {
+				status = PROTOBUF_C_GRPC2_INTERNAL;
+				message = "invalid credentials header";
+				break;
+			}
+	}
+	if (status != PROTOBUF_C_GRPC2_OK) {
+		client_fail_unsent(c, status,
+				   message != NULL ? message : "credentials failed",
+				   !fast);
+		goto out;
+	}
+	sid = client_submit(c, headers, n_headers);
+	if (sid < 0) {
+		client_fail_unsent(c, PROTOBUF_C_GRPC2_UNAVAILABLE,
+				   nghttp2_strerror((int) sid), !fast);
+		goto out;
+	}
+	c->stream_id = sid;
+out:
+	if (!fast)
+		call_unref(c);			/* the reference it was waiting with */
+}
+
 ProtobufCInputStream *
 protobuf_c_grpc2__client_invoke_local(ProtobufCService *service,
 				      uint64_t timeout_ms,
@@ -977,10 +1312,7 @@ protobuf_c_grpc2__client_invoke_local(ProtobufCService *service,
 	const ProtobufCMethodDescriptor *m;
 	Call *c;
 	ClientSink *sink = NULL;
-	nghttp2_nv nva[8];
-	size_t nnv = 0;
-	char timeout_hdr[16];
-	nghttp2_data_reader dr;
+	ProtobufCGrpc2CallCredentials *creds;
 	char *path;
 	size_t plen;
 	int64_t sid;
@@ -1026,7 +1358,7 @@ protobuf_c_grpc2__client_invoke_local(ProtobufCService *service,
 
 	if (input != NULL && call_queue_message(c, input) != 0) {
 		/* can't happen before submission except for size/ENOMEM */
-		free(path);
+		c->req_path = path;
 		c->stream_gone = 1;
 		client_complete(c, PROTOBUF_C_GRPC2_INTERNAL, "cannot send request");
 		call_unref(c);
@@ -1035,34 +1367,54 @@ protobuf_c_grpc2__client_invoke_local(ProtobufCService *service,
 	if (!(flags & PROTOBUF_C_INPUT_STREAMING))
 		c->out_finished = 1;
 
-	nva[nnv++] = nv_lit(":method", "POST");
-	nva[nnv++] = nv_lit(":scheme", conn->scheme);
-	nva[nnv++] = nv_lit(":path", path);
-	nva[nnv++] = nv_lit(":authority", conn->authority);
-	if (timeout_ms > 0) {
-		/* the spec wants grpc-timeout right after the pseudo-headers */
-		format_grpc_timeout(timeout_ms, timeout_hdr);
-		nva[nnv++] = nv_lit("grpc-timeout", timeout_hdr);
+	c->req_path = path;		/* owned by the call from here on */
+	c->req_timeout_ms = timeout_ms;
+	if (timeout_ms > 0)
 		c->deadline_ns = add_sat(now_ns(), timeout_ms * 1000000u);
+
+	creds = cs->client != NULL ? protobuf_c_grpc2__client_credentials(cs->client)
+				   : NULL;
+	if (creds == NULL) {
+		sid = client_submit(c, NULL, 0);
+		if (sid < 0) {
+			c->stream_gone = 1;
+			client_complete(c, PROTOBUF_C_GRPC2_UNAVAILABLE,
+					nghttp2_strerror((int) sid));
+			call_unref(c);
+			return NULL;
+		}
+		c->stream_id = sid;
+	} else {
+		ProtobufCGrpc2CallInfo info;
+
+		memset(&info, 0, sizeof info);
+		info.struct_size = sizeof info;
+		info.service = d;
+		info.method = m;
+		c->cred_state = CRED_CHECKING;
+		creds->get(creds, protobuf_c_grpc2__client_io(cs->client), &info,
+			   client_credentials_done, c);
+		if (c->cred_state == CRED_CHECKING) {
+			/* not answered yet: the call waits, with a reference
+			 * for the answer to drop */
+			c->cred_state = CRED_PENDING;
+			c->refs++;
+		} else if (c->done) {
+			/* answered at once, with a failure: reported by now */
+			call_unref(c);
+			return NULL;
+		}
 	}
-	nva[nnv++] = nv_lit("content-type", "application/grpc");
-	nva[nnv++] = nv_lit("te", "trailers");
-	nva[nnv++] = nv_lit("user-agent", "protobuf-c-grpc2");
-	dr.read_data = read_data_cb;
-	sid = nghttp2_conn_submit_request(conn->ng, nva, nnv, &dr, c);
-	free(path);
-	if (sid < 0) {
-		c->stream_gone = 1;
-		client_complete(c, PROTOBUF_C_GRPC2_UNAVAILABLE, nghttp2_strerror((int) sid));
-		call_unref(c);
-		return NULL;
-	}
-	c->stream_id = sid;
 
 	if (flags & PROTOBUF_C_INPUT_STREAMING) {
 		sink = calloc(1, sizeof(*sink));
 		if (sink == NULL) {
-			nghttp2_conn_shutdown_stream(conn->ng, 0, sid, HTTP2_CANCEL);
+			if (c->stream_id >= 0)
+				nghttp2_conn_shutdown_stream(conn->ng, 0,
+							     c->stream_id,
+							     HTTP2_CANCEL);
+			else
+				c->out_finished = 1;	/* sends nothing */
 			return NULL;
 		}
 		sink->base.send = client_sink_send;
@@ -1198,6 +1550,42 @@ recv_header_cb(nghttp2_conn *ng, int64_t stream_id, int32_t token,
 			if (!(v.len >= 16 &&
 			      memcmp(v.base, "application/grpc", 16) == 0))
 				c->http_error = 415;	/* wins over 405 */
+		} else if (c->conn != NULL && c->conn->server != NULL &&
+			   c->conn->server->n_auth_names > 0) {
+			/* a header the authenticator wants (names are lower
+			 * case on both sides) */
+			const ProtobufCGrpc2Server *srv = c->conn->server;
+			size_t i;
+
+			for (i = 0; i < srv->n_auth_names; i++) {
+				char **nn, **vv;
+
+				if (strlen(srv->auth_names[i]) != n.len ||
+				    memcmp(srv->auth_names[i], n.base, n.len) != 0)
+					continue;
+				nn = realloc(c->auth_names,
+					     (c->n_auth_headers + 1) * sizeof(char *));
+				if (nn == NULL)
+					break;
+				c->auth_names = nn;
+				vv = realloc(c->auth_values,
+					     (c->n_auth_headers + 1) * sizeof(char *));
+				if (vv == NULL)
+					break;
+				c->auth_values = vv;
+				c->auth_names[c->n_auth_headers] =
+					xstrndup(n.base, n.len);
+				c->auth_values[c->n_auth_headers] =
+					xstrndup(v.base, v.len);
+				if (c->auth_names[c->n_auth_headers] != NULL &&
+				    c->auth_values[c->n_auth_headers] != NULL)
+					c->n_auth_headers++;
+				else {
+					free(c->auth_names[c->n_auth_headers]);
+					free(c->auth_values[c->n_auth_headers]);
+				}
+				break;
+			}
 		}
 		return 0;
 	}
@@ -1259,6 +1647,38 @@ recv_data_cb(nghttp2_conn *ng, int64_t stream_id, const uint8_t *data,
 	int rv;
 	(void) conn_ud;
 
+	if (c != NULL && c->is_server && c->auth_state == AUTH_PENDING &&
+	    !c->done && c->conn != NULL) {
+		/* waiting for the authenticator: keep the data, and the
+		 * flow-control credit for it, until the verdict is in */
+		if (c->held_len + datalen > HELD_MAX) {
+			server_finish(c, PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED,
+				      "too much data before authentication");
+			nghttp2_conn_extend_max_stream_offset(ng, stream_id, datalen);
+			nghttp2_conn_extend_max_offset(ng, datalen);
+			return 0;
+		}
+		if (c->held_len + datalen > c->held_cap) {
+			size_t cap = c->held_cap ? c->held_cap : 1024;
+			uint8_t *nb;
+
+			while (cap < c->held_len + datalen)
+				cap *= 2;
+			nb = realloc(c->held, cap);
+			if (nb == NULL) {
+				server_finish(c, PROTOBUF_C_GRPC2_RESOURCE_EXHAUSTED,
+					      "out of memory");
+				nghttp2_conn_extend_max_stream_offset(ng, stream_id, datalen);
+				nghttp2_conn_extend_max_offset(ng, datalen);
+				return 0;
+			}
+			c->held = nb;
+			c->held_cap = cap;
+		}
+		memcpy(c->held + c->held_len, data, datalen);
+		c->held_len += datalen;
+		return 0;
+	}
 	nghttp2_conn_extend_max_stream_offset(ng, stream_id, datalen);
 	nghttp2_conn_extend_max_offset(ng, datalen);
 	if (c == NULL || c->done || c->conn == NULL)
@@ -1534,13 +1954,19 @@ protobuf_c_grpc2_conn_handle_expiry(ProtobufCGrpc2Conn *conn)
 				      "deadline exceeded");
 		} else {
 			/* cancel the stream, then tell the application */
-			if (!c->stream_gone)
+			if (!c->stream_gone && c->stream_id >= 0)
 				nghttp2_conn_shutdown_stream(conn->ng, 0,
 							     c->stream_id,
 							     HTTP2_CANCEL);
 			c->out_finished = 1;
 			client_complete(c, PROTOBUF_C_GRPC2_DEADLINE_EXCEEDED,
 					"deadline exceeded");
+			if (c->stream_id < 0 && !c->stream_gone) {
+				/* still waiting for its credentials: there is
+				 * no stream to close, so let go of it here */
+				c->stream_gone = 1;
+				call_unref(c);
+			}
 		}
 	}
 	return rv;
@@ -1559,6 +1985,7 @@ protobuf_c_grpc2_server_free(ProtobufCGrpc2Server *server)
 		protobuf_c_grpc2__server_io_free(server);
 		return;
 	}
+	protobuf_c_grpc2__server_release_auth(server);
 	free(server->services);
 	free(server);
 }

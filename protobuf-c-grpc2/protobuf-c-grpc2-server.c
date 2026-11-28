@@ -13,6 +13,55 @@
 #define IO_CHUNK 16384
 
 /* ------------------------------------------------------------------ */
+/* the authenticator */
+
+void
+protobuf_c_grpc2__server_release_auth(ProtobufCGrpc2Server *server)
+{
+	size_t i;
+
+	for (i = 0; i < server->n_auth_names; i++)
+		free(server->auth_names[i]);
+	free(server->auth_names);
+	server->auth_names = NULL;
+	server->n_auth_names = 0;
+	if (server->auth != NULL && server->auth->destroy != NULL)
+		server->auth->destroy(server->auth);
+	server->auth = NULL;
+}
+
+/* Copy the header names the authenticator wants, lower-cased. */
+static int
+server_setup_auth(ProtobufCGrpc2Server *server, ProtobufCGrpc2ServerAuth *auth)
+{
+	static const char *const dflt[] = { "authorization" };
+	const char *const *names = auth->n_header_names > 0 ? auth->header_names
+							     : dflt;
+	size_t n = auth->n_header_names > 0 ? auth->n_header_names : 1;
+	size_t i, j;
+
+	if (auth->check == NULL)
+		return -1;
+	server->auth_names = calloc(n, sizeof(char *));
+	if (server->auth_names == NULL)
+		return -1;
+	for (i = 0; i < n; i++) {
+		char *s = names[i] != NULL ? strdup(names[i]) : NULL;
+
+		if (s == NULL) {
+			server->n_auth_names = i;
+			return -1;
+		}
+		for (j = 0; s[j] != 0; j++)
+			if (s[j] >= 'A' && s[j] <= 'Z')
+				s[j] = (char) (s[j] - 'A' + 'a');
+		server->auth_names[i] = s;
+	}
+	server->n_auth_names = n;
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* responses from other threads (thread_safe servers) */
 
 void
@@ -150,6 +199,7 @@ server_maybe_finish(ProtobufCGrpc2Server *server)
 		server->io->destroy(server->io);
 	if (server->sts != NULL && server->sts->destroy != NULL)
 		server->sts->destroy(server->sts);
+	protobuf_c_grpc2__server_release_auth(server);
 	free(server->listeners);
 	free(server->services);
 	free(server);
@@ -253,6 +303,18 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 			return NULL;
 		}
 	}
+	if (o.auth != NULL) {
+		if (server_setup_auth(server, o.auth) != 0) {
+			size_t k;
+
+			for (k = 0; k < server->n_auth_names; k++)
+				free(server->auth_names[k]);
+			free(server->auth_names);
+			free(server->services);
+			free(server);
+			return NULL;
+		}
+	}
 	server->conn_options.struct_size = sizeof server->conn_options;
 	server->conn_options.max_message_size = o.max_message_size;
 	server->conn_options.default_timeout_ms = o.default_timeout_ms;
@@ -264,6 +326,7 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 							server);
 		if (server->hook == NULL) {
 			/* io and secure_transport stay with the caller */
+			protobuf_c_grpc2__server_release_auth(server);
 			free(server->services);
 			free(server);
 			return NULL;
@@ -272,6 +335,7 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 			server->shared = calloc(1, sizeof(*server->shared));
 			if (server->shared == NULL) {
 				o.io->remove_iteration_hook(o.io, server->hook);
+				protobuf_c_grpc2__server_release_auth(server);
 				free(server->services);
 				free(server);
 				return NULL;
@@ -286,6 +350,11 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 		server->sts = o.secure_transport;
 		if (o.secure_transport != NULL && o.secure_transport->ref != NULL)
 			o.secure_transport->ref(o.secure_transport);
+	}
+	if (o.auth != NULL) {
+		server->auth = o.auth;
+		if (o.auth->ref != NULL)
+			o.auth->ref(o.auth);	/* else ownership is transferred */
 	}
 	return server;
 }
