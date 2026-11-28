@@ -18,6 +18,10 @@
  * dispatch; it may call protobuf_c_rpc_dispatch_run_prepares() once before its
  * first wait so that output produced while setting up is sent too.
  *
+ * The I/O system has no `post` function, so clients on it cannot be
+ * `thread_safe`: a ProtobufCRPCDispatch has no way to be woken from another
+ * thread.
+ *
  * Limitations: host names given to `connect` are resolved with a blocking
  * getaddrinfo() call (numeric addresses never block); `listen` takes address
  * literals only, like the other adapters; POSIX only.

@@ -13,6 +13,8 @@
  * core's iteration hook (where it sends the output that callbacks have
  * produced). It needs GLib 2.36 or later; POSIX only.
  *
+ * The I/O system supports thread safe clients (`post`).
+ *
  * Limitations: host names given to `connect` are resolved with a blocking
  * getaddrinfo() call (numeric addresses never block); `listen` takes address
  * literals only, like the other adapters.

@@ -2,6 +2,7 @@
  * The client "channel": creation, lazy connect, queued calls,
  * reconnect and backoff on top of the pluggable I/O and TLS interfaces.
  */
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,15 @@ struct ProtobufCGrpc2Client {
 	ProtobufCService **handles;
 	size_t n_handles;
 	int shutting_down;
+
+	/* thread_safe clients: calls from other threads are posted to the
+	 * loop. `mu` guards the two fields below, the only state that other
+	 * threads touch. */
+	int thread_safe;
+	pthread_t home;			/* the thread that created the client */
+	pthread_mutex_t mu;
+	size_t pending_posts;		/* posted, not yet run */
+	int accepting;			/* 0 once client_free() has begun */
 };
 
 const ProtobufCGrpc2ConnOptions *
@@ -77,9 +87,18 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 		return NULL;
 	if (o.io == NULL || o.host == NULL)
 		return NULL;
+	if (o.thread_safe && o.io->post == NULL)
+		return NULL;
 	c = calloc(1, sizeof(*c));
 	if (c == NULL)
 		return NULL;
+	if (o.thread_safe && pthread_mutex_init(&c->mu, NULL) != 0) {
+		free(c);
+		return NULL;
+	}
+	c->thread_safe = o.thread_safe != 0;
+	c->home = pthread_self();
+	c->accepting = 1;
 	c->host = dup_or_null(o.host);
 	c->port = o.port;
 	c->server_name = dup_or_null(o.server_name != NULL ? o.server_name : o.host);
@@ -97,6 +116,8 @@ protobuf_c_grpc2_client_new(const ProtobufCGrpc2ClientOptions *options)
 		free(c->server_name);
 		free(c->scheme);
 		free(c->authority);
+		if (c->thread_safe)
+			pthread_mutex_destroy(&c->mu);
 		free(c);
 		return NULL;
 	}
@@ -157,6 +178,16 @@ client_finalize_if_done(ProtobufCGrpc2Client *c)
 
 	if (!c->shutting_down || c->pending_closes > 0 || c->connect_handle != NULL)
 		return;
+	if (c->thread_safe) {
+		size_t pending;
+
+		pthread_mutex_lock(&c->mu);
+		pending = c->pending_posts;
+		pthread_mutex_unlock(&c->mu);
+		if (pending > 0)
+			return;		/* the last posted function finalizes */
+		pthread_mutex_destroy(&c->mu);
+	}
 	if (c->hook != NULL)
 		c->io->remove_iteration_hook(c->io, c->hook);
 	if (c->connect_timer != NULL)
@@ -378,6 +409,11 @@ protobuf_c_grpc2_client_free(ProtobufCGrpc2Client *c)
 {
 	if (c == NULL || c->shutting_down)
 		return;
+	if (c->thread_safe) {
+		pthread_mutex_lock(&c->mu);
+		c->accepting = 0;
+		pthread_mutex_unlock(&c->mu);
+	}
 	c->shutting_down = 1;
 	if (c->connect_handle != NULL) {
 		c->io->cancel_connect(c->io, c->connect_handle);
@@ -392,4 +428,197 @@ protobuf_c_grpc2_client_free(ProtobufCGrpc2Client *c)
 	else if (c->conn != NULL)
 		client_attempt_failed(c);	/* queued calls, never connected */
 	client_finalize_if_done(c);
+}
+
+/* ------------------------------------------------------------------ */
+/* calls from other threads */
+
+int
+protobuf_c_grpc2__client_is_foreign(const ProtobufCGrpc2Client *c)
+{
+	return c->thread_safe && !pthread_equal(pthread_self(), c->home);
+}
+
+/* The request side of a call started from another thread: what is sent on it
+ * is queued behind the call itself, and the loop passes it to the real stream
+ * (which only the loop thread touches). */
+typedef struct {
+	ProtobufCInputStream base;	/* must be first */
+	ProtobufCGrpc2Client *client;
+	ProtobufCInputStream *real;	/* NULL if the call did not start */
+} ForeignSink;
+
+enum { OP_CALL, OP_SEND, OP_END };
+
+typedef struct {
+	ProtobufCGrpc2Client *client;
+	int kind;
+	ProtobufCService *service;	/* OP_CALL */
+	unsigned index_and_flags;
+	uint64_t timeout_ms;
+	ProtobufCClosure closure;
+	void *closure_data;
+	ForeignSink *sink;		/* OP_SEND, OP_END; OP_CALL if streaming */
+	const ProtobufCMessageDescriptor *desc;	/* of the packed message */
+	uint8_t *data;
+	size_t len;
+	int has_message;
+} Op;
+
+static void
+op_run(void *arg)
+{
+	Op *op = arg;
+	ProtobufCGrpc2Client *c = op->client;
+	ProtobufCMessage *m = NULL;
+
+	if (op->has_message) {
+		m = protobuf_c_message_unpack(op->desc, NULL, op->len, op->data);
+		if (m == NULL && op->kind == OP_CALL && op->closure != NULL)
+			op->closure(NULL, op->closure_data);
+	}
+	switch (op->kind) {
+	case OP_CALL:
+		if (!op->has_message || m != NULL) {
+			ProtobufCInputStream *real =
+				protobuf_c_grpc2__client_invoke_local(
+					op->service, op->timeout_ms,
+					op->index_and_flags, m, op->closure,
+					op->closure_data);
+			if (op->sink != NULL)
+				op->sink->real = real;
+			else if (real != NULL)
+				real->send(real, NULL);	/* cannot happen */
+		}
+		break;
+	case OP_SEND:
+		if (op->sink->real != NULL && m != NULL)
+			op->sink->real->send(op->sink->real, m);
+		break;
+	case OP_END:
+		if (op->sink->real != NULL)
+			op->sink->real->send(op->sink->real, NULL);
+		free(op->sink);
+		break;
+	}
+	if (m != NULL)
+		protobuf_c_message_free_unpacked(m, NULL);
+	free(op->data);
+	free(op);
+
+	/* the client may only go once nothing posted is left to run */
+	pthread_mutex_lock(&c->mu);
+	c->pending_posts--;
+	pthread_mutex_unlock(&c->mu);
+	client_finalize_if_done(c);
+}
+
+/* Takes `op` on success; on failure the caller still owns it. */
+static int
+op_post(ProtobufCGrpc2Client *c, Op *op)
+{
+	pthread_mutex_lock(&c->mu);
+	if (!c->accepting) {
+		pthread_mutex_unlock(&c->mu);
+		return -1;
+	}
+	c->pending_posts++;
+	pthread_mutex_unlock(&c->mu);
+	if (c->io->post(c->io, op_run, op) != 0) {
+		pthread_mutex_lock(&c->mu);
+		c->pending_posts--;
+		pthread_mutex_unlock(&c->mu);
+		return -1;
+	}
+	return 0;
+}
+
+static Op *
+op_new(ProtobufCGrpc2Client *c, int kind, const ProtobufCMessageDescriptor *desc,
+       const ProtobufCMessage *msg)
+{
+	Op *op = calloc(1, sizeof(*op));
+
+	if (op == NULL)
+		return NULL;
+	op->client = c;
+	op->kind = kind;
+	if (msg != NULL) {
+		size_t n = protobuf_c_message_get_packed_size(msg);
+
+		op->data = malloc(n ? n : 1);
+		if (op->data == NULL) {
+			free(op);
+			return NULL;
+		}
+		protobuf_c_message_pack(msg, op->data);
+		op->len = n;
+		op->desc = desc;
+		op->has_message = 1;
+	}
+	return op;
+}
+
+static protobuf_c_boolean
+foreign_sink_send(ProtobufCInputStream *s, const ProtobufCMessage *msg)
+{
+	ForeignSink *fs = (ForeignSink *) s;
+	Op *op = op_new(fs->client, msg != NULL ? OP_SEND : OP_END,
+			s->input_descriptor, msg);
+
+	if (op == NULL)
+		return 0;
+	op->sink = fs;
+	if (op_post(fs->client, op) != 0) {
+		free(op->data);
+		free(op);
+		return 0;
+	}
+	return 1;	/* the end of the stream frees `fs` when it has run */
+}
+
+ProtobufCInputStream *
+protobuf_c_grpc2__client_invoke_foreign(ProtobufCGrpc2Client *c,
+					ProtobufCService *service,
+					unsigned index_and_flags,
+					uint64_t timeout_ms,
+					const ProtobufCMessage *input,
+					ProtobufCClosure closure,
+					void *closure_data)
+{
+	unsigned index = index_and_flags & ~PROTOBUF_C_STREAMING_MASK;
+	const ProtobufCMethodDescriptor *m = &service->descriptor->methods[index];
+	ForeignSink *sink = NULL;
+	Op *op = op_new(c, OP_CALL, m->input, input);
+
+	if (op == NULL)
+		goto fail;
+	op->service = service;
+	op->index_and_flags = index_and_flags;
+	op->timeout_ms = timeout_ms;
+	op->closure = closure;
+	op->closure_data = closure_data;
+	if (index_and_flags & PROTOBUF_C_INPUT_STREAMING) {
+		sink = calloc(1, sizeof(*sink));
+		if (sink == NULL)
+			goto fail;
+		sink->base.send = foreign_sink_send;
+		sink->base.input_descriptor = m->input;
+		sink->client = c;
+		op->sink = sink;
+	}
+	if (op_post(c, op) != 0)
+		goto fail;
+	return sink != NULL ? &sink->base : NULL;
+fail:
+	if (op != NULL) {
+		free(op->data);
+		free(op);
+	}
+	free(sink);
+	/* the client is closing, or out of memory: reported here, on the
+	 * calling thread, as the loop cannot be asked */
+	if (closure != NULL)
+		closure(NULL, closure_data);
+	return NULL;
 }

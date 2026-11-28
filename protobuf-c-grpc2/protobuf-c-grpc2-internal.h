@@ -92,6 +92,19 @@ ProtobufCGrpc2Conn *protobuf_c_grpc2__client_acquire_conn(
 const ProtobufCGrpc2ConnOptions *protobuf_c_grpc2__client_options(
 	const ProtobufCGrpc2Client *client);
 
+/* A thread_safe client, called from a thread other than its home thread. */
+int protobuf_c_grpc2__client_is_foreign(const ProtobufCGrpc2Client *client);
+ProtobufCInputStream *protobuf_c_grpc2__client_invoke_foreign(
+	ProtobufCGrpc2Client *client, ProtobufCService *service,
+	unsigned index_and_flags, uint64_t timeout_ms,
+	const ProtobufCMessage *input, ProtobufCClosure closure,
+	void *closure_data);
+/* What client_invoke does on the loop thread, with the timeout to use. */
+ProtobufCInputStream *protobuf_c_grpc2__client_invoke_local(
+	ProtobufCService *service, uint64_t timeout_ms,
+	unsigned index_and_flags, const ProtobufCMessage *input,
+	ProtobufCClosure closure, void *closure_data);
+
 /* protobuf-c-grpc2.c: a client service handle bound to a client */
 ProtobufCService *protobuf_c_grpc2__client_service_new(
 	ProtobufCGrpc2Client *client, const ProtobufCServiceDescriptor *d,

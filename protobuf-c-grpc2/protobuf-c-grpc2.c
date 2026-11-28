@@ -938,10 +938,13 @@ client_sink_send(ProtobufCInputStream *s, const ProtobufCMessage *msg)
 	return ok;
 }
 
-static ProtobufCInputStream *
-client_invoke(ProtobufCService *service, unsigned index_and_flags,
-	      const ProtobufCMessage *input, ProtobufCClosure closure,
-	      void *closure_data)
+ProtobufCInputStream *
+protobuf_c_grpc2__client_invoke_local(ProtobufCService *service,
+				      uint64_t timeout_ms,
+				      unsigned index_and_flags,
+				      const ProtobufCMessage *input,
+				      ProtobufCClosure closure,
+				      void *closure_data)
 {
 	ClientService *cs = (ClientService *) service;
 	ProtobufCGrpc2Conn *conn = cs->client
@@ -1014,11 +1017,11 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 	nva[nnv++] = nv_lit(":scheme", conn->scheme);
 	nva[nnv++] = nv_lit(":path", path);
 	nva[nnv++] = nv_lit(":authority", conn->authority);
-	if (cs->timeout_ms > 0) {
+	if (timeout_ms > 0) {
 		/* the spec wants grpc-timeout right after the pseudo-headers */
-		format_grpc_timeout(cs->timeout_ms, timeout_hdr);
+		format_grpc_timeout(timeout_ms, timeout_hdr);
 		nva[nnv++] = nv_lit("grpc-timeout", timeout_hdr);
-		c->deadline_ns = add_sat(now_ns(), cs->timeout_ms * 1000000u);
+		c->deadline_ns = add_sat(now_ns(), timeout_ms * 1000000u);
 	}
 	nva[nnv++] = nv_lit("content-type", "application/grpc");
 	nva[nnv++] = nv_lit("te", "trailers");
@@ -1047,6 +1050,22 @@ client_invoke(ProtobufCService *service, unsigned index_and_flags,
 		return &sink->base;
 	}
 	return NULL;
+}
+
+static ProtobufCInputStream *
+client_invoke(ProtobufCService *service, unsigned index_and_flags,
+	      const ProtobufCMessage *input, ProtobufCClosure closure,
+	      void *closure_data)
+{
+	ClientService *cs = (ClientService *) service;
+
+	if (cs->client != NULL && protobuf_c_grpc2__client_is_foreign(cs->client))
+		return protobuf_c_grpc2__client_invoke_foreign(
+			cs->client, service, index_and_flags, cs->timeout_ms,
+			input, closure, closure_data);
+	return protobuf_c_grpc2__client_invoke_local(
+		service, cs->timeout_ms, index_and_flags, input, closure,
+		closure_data);
 }
 
 static void

@@ -1,14 +1,26 @@
 /* libuv implementation of ProtobufCGrpc2IoSystem. */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "protobuf-c-grpc2-uv.h"
+
+typedef struct UvPost UvPost;
+struct UvPost {
+	UvPost *next;
+	void (*fn)(void *);
+	void *data;
+};
 
 typedef struct {
 	ProtobufCGrpc2IoSystem base;	/* must be first */
 	uv_loop_t *loop;
 	int refs;
 	int floating;		/* the creation reference is not yet claimed */
+	/* post(): the only thing other threads touch */
+	uv_async_t async;
+	uv_mutex_t post_mutex;
+	UvPost *post_head, *post_tail;
 } UvIo;
 
 typedef struct {
@@ -436,11 +448,71 @@ uv_ref_(ProtobufCGrpc2IoSystem *io)
 		u->refs++;
 }
 
+/* ---- posting from other threads ---- */
+
+static void
+async_fired(uv_async_t *a)
+{
+	UvIo *io = (UvIo *) ((char *) a - offsetof(UvIo, async));
+	UvPost *list;
+
+	uv_mutex_lock(&io->post_mutex);
+	list = io->post_head;
+	io->post_head = io->post_tail = NULL;
+	uv_mutex_unlock(&io->post_mutex);
+	while (list != NULL) {
+		UvPost *p = list;
+
+		list = p->next;
+		p->fn(p->data);
+		free(p);
+	}
+}
+
+static int
+uv_post_(ProtobufCGrpc2IoSystem *io, void (*fn)(void *), void *data)
+{
+	UvIo *u = (UvIo *) io;
+	UvPost *p = malloc(sizeof(*p));
+
+	if (p == NULL)
+		return -1;
+	p->next = NULL;
+	p->fn = fn;
+	p->data = data;
+	uv_mutex_lock(&u->post_mutex);
+	if (u->post_tail != NULL)
+		u->post_tail->next = p;
+	else
+		u->post_head = p;
+	u->post_tail = p;
+	uv_mutex_unlock(&u->post_mutex);
+	uv_async_send(&u->async);
+	return 0;
+}
+
+static void
+io_closed(uv_handle_t *h)
+{
+	UvIo *io = (UvIo *) ((char *) h - offsetof(UvIo, async));
+
+	while (io->post_head != NULL) {		/* never run: not delivered */
+		UvPost *p = io->post_head;
+
+		io->post_head = p->next;
+		free(p);
+	}
+	uv_mutex_destroy(&io->post_mutex);
+	free(io);
+}
+
 static void
 uv_destroy_(ProtobufCGrpc2IoSystem *io)
 {
-	if (--((UvIo *) io)->refs == 0)
-		free(io);
+	UvIo *u = (UvIo *) io;
+
+	if (--u->refs == 0)
+		uv_close((uv_handle_t *) &u->async, io_closed);
 }
 
 ProtobufCGrpc2IoSystem *
@@ -451,6 +523,17 @@ protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
 	if (io == NULL)
 		return NULL;
 	io->loop = loop;
+	if (uv_mutex_init(&io->post_mutex) != 0) {
+		free(io);
+		return NULL;
+	}
+	if (uv_async_init(loop, &io->async, async_fired) != 0) {
+		uv_mutex_destroy(&io->post_mutex);
+		free(io);
+		return NULL;
+	}
+	/* it must not keep the loop alive: that is up to the application */
+	uv_unref((uv_handle_t *) &io->async);
 	io->base.listen = uv_listen_;
 	io->base.unlisten = uv_unlisten_;
 	io->base.connect = uv_connect_;
@@ -466,6 +549,7 @@ protobuf_c_grpc2_io_system_new_uv(uv_loop_t *loop)
 	io->base.remove_iteration_hook = uv_remove_hook_;
 	io->base.destroy = uv_destroy_;
 	io->base.ref = uv_ref_;
+	io->base.post = uv_post_;
 	io->refs = 1;
 	io->floating = 1;
 	return &io->base;

@@ -29,6 +29,9 @@ AS_IF([test "x$with_uv" != xno],
       [PKG_CHECK_MODULES([LIBUV], [libuv], [have_uv=yes], [have_uv=no])])
 AM_CONDITIONAL([WITH_UV], [test "$have_uv" = yes])
 
+# Thread safe clients use pthread mutexes.
+AC_SEARCH_LIBS([pthread_mutex_init], [pthread])
+
 # The poll(2) adapter needs nothing but POSIX sockets.
 AC_ARG_WITH([poll], AS_HELP_STRING([--without-poll], [do not build the poll(2) adapter]))
 AM_CONDITIONAL([WITH_POLL], [test "x$with_poll" != xno])

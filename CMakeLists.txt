@@ -89,6 +89,8 @@ function(grpc2_pc name)
 endfunction()
 
 # ---- core ----
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 add_library(protobuf-c-grpc2
   protobuf-c-grpc2/protobuf-c-grpc2.c
   protobuf-c-grpc2/protobuf-c-grpc2-pump.c
@@ -99,7 +101,7 @@ target_include_directories(protobuf-c-grpc2 PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/protobuf-c-grpc2>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(protobuf-c-grpc2 PUBLIC
-  PkgConfig::PROTOBUF_C PkgConfig::NGHTTP2V2)
+  PkgConfig::PROTOBUF_C PkgConfig::NGHTTP2V2 Threads::Threads)
 target_compile_options(protobuf-c-grpc2 PRIVATE -Wall -Wextra)
 set_target_properties(protobuf-c-grpc2 PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION 0)
@@ -325,6 +327,19 @@ if(BUILD_TESTS)
       protobuf-c-grpc2-${lib})
     add_test(NAME bulk-${backend} COMMAND test-bulk-${backend})
     set_tests_properties(bulk-${backend} PROPERTIES TIMEOUT 60)
+
+    if(NOT backend MATCHES "^dispatch")	# the dispatch cannot be woken from another thread
+      add_executable(test-threads-${backend} t/threads.c
+        t/loop-backend-${backend}.c
+        ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+      target_include_directories(test-threads-${backend} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/t
+        ${CMAKE_CURRENT_BINARY_DIR}/examples)
+      target_link_libraries(test-threads-${backend}
+        protobuf-c-grpc2-${lib})
+      add_test(NAME threads-${backend} COMMAND test-threads-${backend})
+      set_tests_properties(threads-${backend} PROPERTIES TIMEOUT 60)
+    endif()
 
     add_executable(test-client-${backend} t/client.c
       t/loop-backend-${backend}.c

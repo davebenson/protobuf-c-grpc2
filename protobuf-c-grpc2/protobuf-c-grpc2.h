@@ -7,8 +7,10 @@
  * ProtobufCService interface, including the streaming extensions of
  * ProtobufCService::invoke (see protobuf-c.h).
  *
- * Nothing in this library is thread safe: a connection, and every call made
- * through it, must be used from one thread (or with external locking).
+ * Nothing in this library is thread safe unless it says so: a connection, and
+ * every call made through it, must be used from one thread (or with external
+ * locking). The exception is a client created with `thread_safe` (see
+ * ProtobufCGrpc2ClientOptions), which can be called from any thread.
  */
 #ifndef PROTOBUF_C_GRPC2_H
 #define PROTOBUF_C_GRPC2_H
@@ -333,6 +335,26 @@ typedef struct ProtobufCGrpc2ClientOptions {
 	/** Optional; see ProtobufCGrpc2CallDoneFn. */
 	ProtobufCGrpc2CallDoneFn on_call_done;
 	void *user_data;
+	/**
+	 * Nonzero: service handles of this client may be invoked from any
+	 * thread (and their input streams used from any thread). The thread
+	 * that creates the client is taken to be the one that runs the event
+	 * loop. A call made from another thread is packed, queued with the
+	 * I/O system's `post` function (so `io` must have one) and started by
+	 * the loop; the message is copied, so the caller keeps ownership of
+	 * it. Everything the client reports, namely `closure`s, `on_call_done`
+	 * and the messages of streaming calls, is delivered on the loop thread.
+	 * Calls made from the loop thread are not queued.
+	 *
+	 * Calls from other threads cannot report a failure to start through
+	 * the return value (an input stream is returned at once, and what
+	 * is sent on it is queued): failures arrive as for any call, through
+	 * the closure. Not thread safe, and to be done on the loop thread:
+	 * protobuf_c_grpc2_client_new(), _get_service(), _free() and
+	 * protobuf_c_grpc2_client_service_set_timeout_ms(). Stop all other
+	 * threads before freeing the client.
+	 */
+	int thread_safe;
 } ProtobufCGrpc2ClientOptions;
 
 #define PROTOBUF_C_GRPC2_CLIENT_OPTIONS_INIT \

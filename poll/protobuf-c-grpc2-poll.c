@@ -26,6 +26,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +81,11 @@ struct Hook {
 };
 
 struct ProtobufCGrpc2PollLoop {
+	/* post(): the only thing other threads touch */
+	pthread_mutex_t post_mutex;
+	Task *posted, *posted_tail;
+	int wake[2];		/* self-pipe: written by post(), polled here */
+
 	Entry *entries;
 	Timer *timers;
 	Hook *hooks;
@@ -170,6 +176,63 @@ tasks_run(ProtobufCGrpc2PollLoop *loop)
 		t->fn(t->arg);
 		free(t);
 	}
+}
+
+/* ---- posting from other threads ---- */
+
+static int
+poll_post(ProtobufCGrpc2IoSystem *io, void (*fn)(void *), void *arg)
+{
+	ProtobufCGrpc2PollLoop *loop = ((PollIo *) io)->loop;
+	Task *t = malloc(sizeof(*t));
+	char b = 'x';
+
+	if (t == NULL)
+		return -1;
+	t->next = NULL;
+	t->fn = fn;
+	t->arg = arg;
+	pthread_mutex_lock(&loop->post_mutex);
+	if (loop->posted_tail != NULL)
+		loop->posted_tail->next = t;
+	else
+		loop->posted = t;
+	loop->posted_tail = t;
+	pthread_mutex_unlock(&loop->post_mutex);
+	/* a full pipe means a wake-up is pending anyway */
+	if (write(loop->wake[1], &b, 1) < 0) {
+		/* EAGAIN or EINTR: nothing to do */
+	}
+	return 0;
+}
+
+/* Move what other threads posted to the end of the deferred tasks. */
+static void
+posted_collect(ProtobufCGrpc2PollLoop *loop)
+{
+	Task *list, *tail;
+
+	pthread_mutex_lock(&loop->post_mutex);
+	list = loop->posted;
+	tail = loop->posted_tail;
+	loop->posted = loop->posted_tail = NULL;
+	pthread_mutex_unlock(&loop->post_mutex);
+	if (list == NULL)
+		return;
+	if (loop->tasks_tail != NULL)
+		loop->tasks_tail->next = list;
+	else
+		loop->tasks = list;
+	loop->tasks_tail = tail;
+}
+
+static void
+wake_drain(ProtobufCGrpc2PollLoop *loop)
+{
+	char buf[64];
+
+	while (read(loop->wake[0], buf, sizeof buf) > 0)
+		;
 }
 
 /* ---- entries ---- */
@@ -848,8 +911,12 @@ loop_alive(ProtobufCGrpc2PollLoop *loop)
 {
 	Entry *e;
 	Timer *t;
+	int posted;
 
-	if (loop->tasks != NULL)
+	pthread_mutex_lock(&loop->post_mutex);
+	posted = loop->posted != NULL;
+	pthread_mutex_unlock(&loop->post_mutex);
+	if (loop->tasks != NULL || posted)
 		return 1;
 	for (t = loop->timers; t != NULL; t = t->next)
 		if (t->active)
@@ -898,6 +965,7 @@ protobuf_c_grpc2_poll_loop_run_once(ProtobufCGrpc2PollLoop *loop,
 	int64_t wait;
 	int64_t tn;
 
+	posted_collect(loop);
 	tasks_run(loop);
 	timers_run(loop);
 	hooks_run(loop);
@@ -906,12 +974,12 @@ protobuf_c_grpc2_poll_loop_run_once(ProtobufCGrpc2PollLoop *loop,
 
 	for (e = loop->entries; e != NULL; e = e->next)
 		n += e->events != 0;
-	if (n > loop->cap) {
+	if (n + 1 > loop->cap) {
 		size_t cap = loop->cap ? loop->cap : 16;
 		struct pollfd *pf;
 		Entry **en;
 
-		while (cap < n)
+		while (cap < n + 1)
 			cap *= 2;
 		pf = realloc(loop->pfds, cap * sizeof(*pf));
 		if (pf == NULL)
@@ -941,8 +1009,16 @@ protobuf_c_grpc2_poll_loop_run_once(ProtobufCGrpc2PollLoop *loop,
 	if (wait > 0x7fffffff)
 		wait = 0x7fffffff;
 
-	if (poll(loop->pfds, (nfds_t) n, (int) wait) > 0)
+	/* the wake-up pipe goes last, after the n entries */
+	loop->pfds[n].fd = loop->wake[0];
+	loop->pfds[n].events = POLLIN;
+	loop->pfds[n].revents = 0;
+	if (poll(loop->pfds, (nfds_t) n + 1, (int) wait) > 0) {
+		if (loop->pfds[n].revents != 0)
+			wake_drain(loop);
 		dispatch(loop, n);
+	}
+	posted_collect(loop);
 	return loop_alive(loop);
 }
 
@@ -963,7 +1039,25 @@ protobuf_c_grpc2_poll_loop_stop(ProtobufCGrpc2PollLoop *loop)
 ProtobufCGrpc2PollLoop *
 protobuf_c_grpc2_poll_loop_new(void)
 {
-	return calloc(1, sizeof(ProtobufCGrpc2PollLoop));
+	ProtobufCGrpc2PollLoop *loop = calloc(1, sizeof(*loop));
+	int i;
+
+	if (loop == NULL)
+		return NULL;
+	if (pipe(loop->wake) != 0) {
+		free(loop);
+		return NULL;
+	}
+	for (i = 0; i < 2; i++)
+		if (set_nonblock(loop->wake[i]) != 0)
+			break;
+	if (i < 2 || pthread_mutex_init(&loop->post_mutex, NULL) != 0) {
+		close(loop->wake[0]);
+		close(loop->wake[1]);
+		free(loop);
+		return NULL;
+	}
+	return loop;
 }
 
 int
@@ -973,6 +1067,15 @@ protobuf_c_grpc2_poll_loop_close(ProtobufCGrpc2PollLoop *loop)
 		return -1;
 	free(loop->pfds);
 	free(loop->ents);
+	while (loop->posted != NULL) {		/* never run: not delivered */
+		Task *t = loop->posted;
+
+		loop->posted = t->next;
+		free(t);
+	}
+	close(loop->wake[0]);
+	close(loop->wake[1]);
+	pthread_mutex_destroy(&loop->post_mutex);
 	free(loop);
 	return 0;
 }
@@ -1026,6 +1129,7 @@ protobuf_c_grpc2_io_system_new_poll(ProtobufCGrpc2PollLoop *loop)
 	io->base.remove_iteration_hook = poll_remove_hook;
 	io->base.destroy = poll_destroy;
 	io->base.ref = poll_ref;
+	io->base.post = poll_post;
 	io->refs = 1;
 	io->floating = 1;
 	loop->n_objects++;

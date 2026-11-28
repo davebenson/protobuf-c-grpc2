@@ -11,8 +11,9 @@
  * Both are "derived" in the usual protobuf-c way: embed the base struct as
  * the first member of your own struct, and cast in the vtable functions.
  *
- * Like the rest of the library, nothing here is thread safe: every callback
- * must be made from the event loop's thread.
+ * Nothing here is thread safe, with the single exception of `post`: every
+ * call into the system and every callback is made from the event loop's
+ * thread.
  */
 #ifndef PROTOBUF_C_GRPC2_IO_H
 #define PROTOBUF_C_GRPC2_IO_H
@@ -142,6 +143,22 @@ struct ProtobufCGrpc2IoSystem {
 	 * client it is given to, which calls `destroy` on it.
 	 */
 	void (*ref)(ProtobufCGrpc2IoSystem *io);
+
+	/**
+	 * Optional, and the one member that may be called from any thread:
+	 * arrange for `fn(data)` to be called from the event loop's thread,
+	 * and wake the loop if it is waiting. `fn` is never called from inside
+	 * this call (not even when it is made from the loop's thread), and
+	 * posted functions run in the order they were posted. Returns 0, or -1
+	 * (and then `fn` will not be called).
+	 *
+	 * The caller must keep the system alive until `fn` has run. Posted
+	 * functions do not keep the loop running: a program that expects
+	 * them must keep the loop alive itself, as it would to wait for a
+	 * network event. A system without `post` cannot serve clients created
+	 * with `thread_safe`.
+	 */
+	int (*post)(ProtobufCGrpc2IoSystem *io, void (*fn)(void *), void *data);
 };
 
 /* ------------------------------------------------------------------ */

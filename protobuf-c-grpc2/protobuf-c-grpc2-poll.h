@@ -6,6 +6,10 @@
  * object separate from the I/O systems that run on it, so a server and a
  * client (each of which owns an I/O system) can share one loop.
  *
+ * The loop is single-threaded, except that the I/O system's `post` function
+ * (used by thread safe clients) may be called from other threads; it wakes the
+ * loop through a pipe that the loop owns.
+ *
  * Limitations: host names given to `connect` are resolved with a blocking
  * getaddrinfo() call (numeric addresses never block); `listen` takes address
  * literals only, like the other adapters; POSIX only.

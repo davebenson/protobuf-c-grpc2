@@ -202,6 +202,44 @@ The endpoint test (a server and a client, with and without TLS) also runs once
 per TLS library, through `t/tls-backend.h`, and `t/tls-interop.c` connects the
 OpenSSL and GnuTLS adapters to each other in every combination.
 
+## Threads
+
+The library is single-threaded: everything is done from the thread that runs
+the event loop. A client can opt out of that for its calls. With
+`ProtobufCGrpc2ClientOptions.thread_safe` set, a service handle obtained from
+`protobuf_c_grpc2_client_get_service()` may be invoked from any thread:
+
+    o.thread_safe = 1;
+    client = protobuf_c_grpc2_client_new(&o);       /* on the loop's thread */
+    svc = protobuf_c_grpc2_client_get_service(client, &example__greeter__descriptor);
+    ...
+    /* from any thread */
+    example__greeter__say_hello(svc, &req, on_reply, data);
+
+The thread that creates the client is taken to be the loop thread. A call made
+from there goes straight through. A call from another thread packs the request
+(so the message may be freed or reused as soon as the call returns), posts it
+to the loop with the I/O system's `post` function, which wakes the loop, and
+returns; the loop starts the call. For a call with a request stream the
+`ProtobufCInputStream` is returned at once, and what is sent on it is queued
+behind the call, from any thread. Everything the client reports, namely
+closures, `on_call_done` and the messages of streams, is delivered on the loop
+thread. Failures to start a call arrive through the closure, as always, since
+the caller has already returned.
+
+`protobuf_c_grpc2_client_new()`, `_get_service()`, `_free()` and
+`_service_set_timeout_ms()` stay on the loop thread; stop the other threads
+before freeing the client. The I/O system must have a `post` function (the uv,
+poll and GLib adapters do; the dispatch adapter cannot, because a
+`ProtobufCRPCDispatch` cannot be woken from another thread), or
+`protobuf_c_grpc2_client_new()` fails. Posted calls do not keep the loop
+running, so keep it alive as you would to wait for a network event. A
+connection accepts only a limited number of concurrent calls (the server's
+`MAX_CONCURRENT_STREAMS`); calls beyond that fail with `UNAVAILABLE` rather
+than wait, so many threads should bound what they have in flight.
+
+Servers are not thread safe yet.
+
 ## Building a client
 
 A client is a "channel" to one server: it connects lazily on the first call

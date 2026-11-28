@@ -13,6 +13,9 @@
  *     what to wait for, and the source has the highest priority so that
  *     nothing ready can keep it from running.
  *
+ * `post` attaches an idle source from whichever thread calls it, which GLib
+ * allows and which wakes the context.
+ *
  * Objects are never freed from inside a callback: closing something removes
  * its source, closes its descriptor and queues a task that reports completion
  * and frees the memory, so no callback can arrive for a freed object.
@@ -871,6 +874,16 @@ glib_remove_hook(ProtobufCGrpc2IoSystem *io, void *hook)
 	g_source_unref(&h->base);
 }
 
+/* ---- posting from other threads ---- */
+
+/* Sources may be attached to a context from any thread, which wakes it up, and
+ * idle sources of one priority run in the order they were attached. */
+static int
+glib_post(ProtobufCGrpc2IoSystem *io, void (*fn)(void *), void *data)
+{
+	return task_post(((GlibIo *) io)->ctx, fn, data);
+}
+
 /* ---- the I/O system ---- */
 
 /* Like g_object_ref_sink(): the first reference taken claims the creation
@@ -921,6 +934,7 @@ protobuf_c_grpc2_io_system_new_glib(GMainContext *context)
 	io->base.remove_iteration_hook = glib_remove_hook;
 	io->base.destroy = glib_destroy;
 	io->base.ref = glib_ref;
+	io->base.post = glib_post;
 	io->refs = 1;
 	io->floating = 1;
 	return &io->base;
