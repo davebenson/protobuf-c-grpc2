@@ -56,7 +56,7 @@ AM_CONDITIONAL([WITH_DISPATCH], [test "$have_dispatch" = yes])
 AC_ARG_WITH([glib], AS_HELP_STRING([--without-glib], [do not build the GLib main-loop adapter]))
 have_glib=no
 AS_IF([test "x$with_glib" != xno],
-      [PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.36], [have_glib=yes], [have_glib=no])])
+      [PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.36 gio-2.0], [have_glib=yes], [have_glib=no])])
 AM_CONDITIONAL([WITH_GLIB], [test "$have_glib" = yes])
 
 AC_ARG_WITH([openssl], AS_HELP_STRING([--without-openssl], [do not build the OpenSSL adapter]))

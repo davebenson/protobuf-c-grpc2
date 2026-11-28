@@ -11,6 +11,8 @@
 
 #include <glib-unix.h>
 
+#include "free-port.h"
+
 #include "protobuf-c-grpc2/protobuf-c-grpc2-glib.h"
 #include "glib-iterate.h"
 
@@ -240,6 +242,14 @@ test_main_loop(void)
 	puts("glib: main loop ok");
 }
 
+static void *accepted_stream;
+static void
+on_accepted(void *data, void *stream)
+{
+	(void) data;
+	accepted_stream = stream;
+}
+
 static int connect_calls;
 static int connect_error;
 static void *connect_stream;
@@ -289,6 +299,36 @@ test_connect(void)
 	io->cancel_connect(io, handle);
 	run_until_idle();
 	assert(connect_calls == 0);
+
+	/* cancelling while the lookup is under way (a name that resolves) */
+	assert(io->connect(io, "localhost", 1, on_connected, NULL, &handle) == 0);
+	io->cancel_connect(io, handle);
+	run_until_idle();
+	assert(connect_calls == 0);
+
+	/* a name that resolves, and a listener to connect to */
+	{
+		void *listener, *stream;
+		unsigned port = test_free_port();
+
+		assert(io->listen(io, "127.0.0.1", port, on_accepted, NULL,
+				  &listener) == 0);
+		connect_calls = 0;
+		connect_stream = NULL;
+		in_call = 1;
+		assert(io->connect(io, "localhost", port, on_connected, NULL,
+				   &handle) == 0);
+		in_call = 0;
+		while (connect_calls == 0 || accepted_stream == NULL)
+			glib_iterate(ctx);
+		assert(connect_calls == 1 && connect_error == 0);
+		stream = connect_stream;
+		assert(stream != NULL);
+		io->stream_close(io, stream);		/* never started: no callback */
+		io->stream_close(io, accepted_stream);
+		io->unlisten(io, listener);
+		run_until_idle();
+	}
 	puts("glib: connect ok");
 }
 

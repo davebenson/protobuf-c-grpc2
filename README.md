@@ -29,7 +29,7 @@ distributions can split it into separate packages:
 | `protobuf-c-grpc2-uv`       | libuv            | a libuv I/O system |
 | `protobuf-c-grpc2-poll`     | POSIX            | a small poll(2) event loop and I/O system, for programs without an event loop of their own |
 | `protobuf-c-grpc2-dispatch` | protobuf-c-rpc (with prepare functions) | an I/O system on protobuf-c-rpc's `ProtobufCRPCDispatch`, to share a main-loop with protobuf-c-rpc services |
-| `protobuf-c-grpc2-glib`     | GLib >= 2.36     | an I/O system on a `GMainContext`, to run gRPC from a GLib or GTK main-loop |
+| `protobuf-c-grpc2-glib`     | GLib >= 2.36, GIO | an I/O system on a `GMainContext`, to run gRPC from a GLib or GTK main-loop |
 | `protobuf-c-grpc2-openssl`  | OpenSSL          | an OpenSSL secure transport |
 | `protobuf-c-grpc2-gnutls`   | GnuTLS           | a GnuTLS secure transport |
 
@@ -189,9 +189,10 @@ timers and deferred completions are sources too, and the core's iteration hook
 is a source whose `prepare` function runs at the start of every iteration. All
 callbacks arrive from the thread that iterates the context, never from inside a
 call into the library, and the I/O system, servers and clients must only be used
-from that thread. The I/O system holds a reference to the context. Like the
-poll and dispatch adapters it resolves host names with a blocking
-`getaddrinfo()`.
+from that thread. The I/O system holds a reference to the context. Unlike the
+poll and dispatch adapters it resolves host names without blocking: it uses
+GIO's `GResolver`, whose lookups run in worker threads and report to the loop
+(so the library needs GIO, which comes with GLib).
 
 The tests under `t/` that need an event loop (`endpoints`, `client`, `bulk`)
 run once on each backend, through the small shim in `t/loop-backend.h`; the

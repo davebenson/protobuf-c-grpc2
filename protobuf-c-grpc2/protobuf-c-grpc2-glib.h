@@ -15,9 +15,11 @@
  *
  * The I/O system supports thread safe clients (`post`).
  *
- * Limitations: host names given to `connect` are resolved with a blocking
- * getaddrinfo() call (numeric addresses never block); `listen` takes address
- * literals only, like the other adapters.
+ * Host names given to `connect` are resolved with GResolver (GIO), without
+ * blocking the loop, so the library needs GIO as well as GLib. The error code
+ * `connect` reports for a failed lookup is -1000 - G_RESOLVER_ERROR_*.
+ *
+ * Limitation: `listen` takes address literals only, like the other adapters.
  */
 #ifndef PROTOBUF_C_GRPC2_GLIB_H
 #define PROTOBUF_C_GRPC2_GLIB_H

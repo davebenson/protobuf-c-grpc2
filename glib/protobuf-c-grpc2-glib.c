@@ -16,6 +16,9 @@
  * `post` attaches an idle source from whichever thread calls it, which GLib
  * allows and which wakes the context.
  *
+ * `connect` resolves names with GResolver (GIO), whose lookups run in worker
+ * threads and report to the loop, so a slow DNS server does not block it.
+ *
  * Objects are never freed from inside a callback: closing something removes
  * its source, closes its descriptor and queues a task that reports completion
  * and frees the memory, so no callback can arrive for a freed object.
@@ -26,7 +29,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdint.h>
@@ -36,6 +38,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <gio/gio.h>
 
 #include "protobuf-c-grpc2-glib.h"
 
@@ -93,7 +97,10 @@ typedef struct {
 
 typedef struct {
 	Entry e;			/* must be first; fd: current attempt */
-	struct addrinfo *res, *cur;
+	GList *addrs, *cur;		/* GInetAddress, from the resolver */
+	GCancellable *cancellable;	/* while resolving */
+	GSource *guard;			/* while resolving: see resolve_guard */
+	int resolving;
 	unsigned port;
 	void (*connected)(void *, void *, int);
 	void *data;
@@ -549,8 +556,9 @@ listener_dispatch(Listener *l)
 static void
 connect_free(Connect *c)
 {
-	if (c->res != NULL)
-		freeaddrinfo(c->res);
+	g_list_free_full(c->addrs, g_object_unref);
+	if (c->cancellable != NULL)
+		g_object_unref(c->cancellable);
 	free(c);
 }
 
@@ -588,11 +596,25 @@ connect_fail(Connect *c)
 static void
 connect_try_next(Connect *c)
 {
-	for (; c->cur != NULL; c->cur = c->cur->ai_next) {
-		struct addrinfo *a = c->cur;
-		int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-		int rv;
+	for (; c->cur != NULL; c->cur = c->cur->next) {
+		struct sockaddr_storage ss;
+		GSocketAddress *sa = g_inet_socket_address_new(
+			(GInetAddress *) c->cur->data, (guint16) c->port);
+		int fd, rv;
+		int family;
+		socklen_t len;
 
+		memset(&ss, 0, sizeof ss);
+		len = (socklen_t) g_socket_address_get_native_size(sa);
+		if (len > sizeof ss ||
+		    !g_socket_address_to_native(sa, &ss, sizeof ss, NULL)) {
+			g_object_unref(sa);
+			c->last_error = EAFNOSUPPORT;
+			continue;
+		}
+		g_object_unref(sa);
+		family = ss.ss_family;
+		fd = socket(family, SOCK_STREAM, 0);
 		if (fd < 0) {
 			c->last_error = errno;
 			continue;
@@ -603,7 +625,7 @@ connect_try_next(Connect *c)
 			continue;
 		}
 		socket_setup(fd);
-		rv = connect(fd, a->ai_addr, a->ai_addrlen);
+		rv = connect(fd, (struct sockaddr *) &ss, len);
 		if (rv == 0 || errno == EINPROGRESS || errno == EINTR) {
 			/* completion (even an immediate one) is seen as
 			 * writability, from the loop; an error may show as
@@ -618,15 +640,64 @@ connect_try_next(Connect *c)
 	connect_fail(c);
 }
 
+/* A source that exists while a lookup is under way. The resolver works in a
+ * thread and puts nothing in the context until it has finished, so without
+ * this a loop that is waiting for the answer would look as if it had nothing
+ * left to wait for. It never becomes ready; asking for a timeout is how it
+ * shows that the context is still expecting something. */
+static gboolean
+guard_prepare(GSource *s, gint *timeout)
+{
+	(void) s;
+	*timeout = 1000;
+	return FALSE;
+}
+
+static gboolean
+guard_dispatch(GSource *s, GSourceFunc cb, gpointer data)
+{
+	(void) s; (void) cb; (void) data;
+	return G_SOURCE_CONTINUE;
+}
+
+static GSourceFuncs guard_funcs = { guard_prepare, NULL, guard_dispatch,
+				    NULL, NULL, NULL };
+
+static void
+resolved(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	Connect *c = user_data;
+	GError *error = NULL;
+	GList *list;
+
+	list = g_resolver_lookup_by_name_finish(G_RESOLVER(source), result, &error);
+	c->resolving = 0;
+	g_source_destroy(c->guard);
+	g_source_unref(c->guard);
+	c->guard = NULL;
+	if (c->cancelled) {		/* nobody is waiting: just clean up */
+		g_list_free_full(list, g_object_unref);
+		g_clear_error(&error);
+		connect_free(c);
+		return;
+	}
+	if (list == NULL) {
+		/* resolver errors are reported as -1000 - G_RESOLVER_ERROR_* */
+		c->last_error = error != NULL ? -1000 - error->code : EINVAL;
+		g_clear_error(&error);
+		connect_fail(c);
+		return;
+	}
+	c->addrs = c->cur = list;
+	connect_try_next(c);
+}
+
 static int
 glib_connect(ProtobufCGrpc2IoSystem *io, const char *host, unsigned port,
 	     void (*connected)(void *, void *, int), void *data, void **handle)
 {
 	GMainContext *ctx = ((GlibIo *) io)->ctx;
-	struct addrinfo hints;
-	char portstr[16];
 	Connect *c;
-	int rv;
 
 	if (port > 65535)
 		return -1;
@@ -637,21 +708,17 @@ glib_connect(ProtobufCGrpc2IoSystem *io, const char *host, unsigned port,
 	c->connected = connected;
 	c->data = data;
 	entry_init(&c->e, ctx, K_CONNECT, -1);
-	snprintf(portstr, sizeof portstr, "%u", port);
-	memset(&hints, 0, sizeof hints);
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	rv = getaddrinfo(host, portstr, &hints, &c->res);	/* may block */
-	c->cur = c->res;
-	if (rv != 0 || c->res == NULL) {
-		/* resolver errors are reported as -1000 - EAI_*, apart from
-		 * the errno values of connect failures */
-		c->last_error = rv != 0 ? -1000 - (rv < 0 ? -rv : rv) : EINVAL;
-		c->res = NULL;
-		connect_fail(c);
-	} else {
-		connect_try_next(c);
-	}
+	c->cancellable = g_cancellable_new();
+	c->guard = g_source_new(&guard_funcs, sizeof(GSource));
+	g_source_attach(c->guard, ctx);
+	c->resolving = 1;
+	/* The answer is delivered to the thread-default context of whoever
+	 * asks, which must be ours. Resolving a numeric address does not block
+	 * or use a thread, but its answer too arrives from the loop. */
+	g_main_context_push_thread_default(ctx);
+	g_resolver_lookup_by_name_async(g_resolver_get_default(), host,
+					c->cancellable, resolved, c);
+	g_main_context_pop_thread_default(ctx);
 	*handle = c;
 	return 0;
 }
@@ -665,6 +732,11 @@ glib_cancel_connect(ProtobufCGrpc2IoSystem *io, void *handle)
 	if (c->cancelled)
 		return;
 	c->cancelled = 1;
+	if (c->resolving) {
+		/* the lookup always calls back, once, and that frees it */
+		g_cancellable_cancel(c->cancellable);
+		return;
+	}
 	if (c->e.fd >= 0) {
 		/* in flight: nobody else will report it */
 		entry_close(&c->e);
@@ -689,7 +761,7 @@ connect_dispatch(Connect *c)
 	if (err != 0) {
 		c->last_error = err;
 		entry_close(&c->e);
-		c->cur = c->cur->ai_next;
+		c->cur = c->cur->next;
 		connect_try_next(c);	/* re-initialises the entry */
 		return;
 	}
