@@ -238,7 +238,27 @@ connection accepts only a limited number of concurrent calls (the server's
 `MAX_CONCURRENT_STREAMS`); calls beyond that fail with `UNAVAILABLE` rather
 than wait, so many threads should bound what they have in flight.
 
-Servers are not thread safe yet.
+A server can do the same for its answers. With
+`ProtobufCGrpc2ServerOptions.thread_safe` set (and an I/O system with `post`),
+handlers are still invoked on the loop thread, but the response closure they
+are given may be called from any thread, so a handler can pass the request to a
+thread pool and answer from there:
+
+    o.thread_safe = 1;
+    ...
+    /* in the handler (loop thread): queue_job(req_copy, closure, closure_data); */
+    /* in a worker thread: */
+    closure(&reply, closure_data);   /* packed, posted to the loop, sent there */
+    closure(NULL, closure_data);     /* for a response stream: the end */
+
+A response given from another thread is copied, so the message may go as soon
+as the closure returns. The usual rule about closures holds: the final call
+(`NULL`, or the single response of a method without a response stream) is made
+once, and the closure is not used after it; calls to one closure must not
+overlap. The closure stays usable if the connection or the server is freed in
+the meantime (the answer is dropped), and the I/O system is kept until the last
+closure has been finished. A handler that parks a closure forever therefore
+keeps the I/O system alive.
 
 ## Building a client
 

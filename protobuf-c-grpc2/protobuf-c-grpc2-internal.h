@@ -2,6 +2,7 @@
 #ifndef PROTOBUF_C_GRPC2_INTERNAL_H
 #define PROTOBUF_C_GRPC2_INTERNAL_H
 
+#include <pthread.h>
 #include <string.h>
 
 #include "protobuf-c-grpc2.h"
@@ -63,6 +64,17 @@ void protobuf_c_grpc2__pump_close(ConnPump *pump);
 
 /* ---- servers ---- */
 
+struct Call;	/* one RPC; defined in protobuf-c-grpc2.c */
+
+/* thread_safe servers: shared by the server and by the response closures that
+ * handlers hold, so that a closure may outlive the server. Only the loop
+ * thread touches `refs`. */
+typedef struct ServerShared {
+	int refs;
+	ProtobufCGrpc2IoSystem *io;	/* released when the last reference goes */
+	pthread_t home;			/* the thread that created the server */
+} ServerShared;
+
 struct ProtobufCGrpc2Server {
 	ProtobufCService **services;
 	size_t n_services;
@@ -78,9 +90,19 @@ struct ProtobufCGrpc2Server {
 	size_t n_listeners;
 	void *hook;
 	int shutting_down;
+	ServerShared *shared;		/* thread_safe servers only */
 };
 
 /* server.c */
+void protobuf_c_grpc2__server_shared_unref(ServerShared *shared);
+/* The closure to give a handler instead of the call's own, for a thread_safe
+ * server: NULL (and the call carries on) if it cannot be allocated. */
+void *protobuf_c_grpc2__safe_closure_new(ServerShared *shared, struct Call *call,
+					 const ProtobufCMessageDescriptor *output,
+					 int output_streaming);
+void protobuf_c_grpc2__safe_closure(const ProtobufCMessage *msg, void *data);
+/* protobuf-c-grpc2.c: the call's own response closure, for the loop thread */
+void protobuf_c_grpc2__server_respond(struct Call *call, const ProtobufCMessage *msg);
 void protobuf_c_grpc2__server_io_free(ProtobufCGrpc2Server *server);
 
 /* ---- clients (client.c, used by protobuf-c-grpc2.c) ---- */

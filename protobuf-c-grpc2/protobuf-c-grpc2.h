@@ -9,8 +9,10 @@
  *
  * Nothing in this library is thread safe unless it says so: a connection, and
  * every call made through it, must be used from one thread (or with external
- * locking). The exception is a client created with `thread_safe` (see
- * ProtobufCGrpc2ClientOptions), which can be called from any thread.
+ * locking). The exceptions are a client created with `thread_safe` (see
+ * ProtobufCGrpc2ClientOptions), which can be called from any thread, and a
+ * server created with `thread_safe` (see ProtobufCGrpc2ServerOptions), whose
+ * handlers can answer from any thread.
  */
 #ifndef PROTOBUF_C_GRPC2_H
 #define PROTOBUF_C_GRPC2_H
@@ -264,6 +266,24 @@ struct ProtobufCGrpc2ServerOptions {
 	/** Optional; see ProtobufCGrpc2CallDoneFn. */
 	ProtobufCGrpc2CallDoneFn on_call_done;
 	void *user_data;
+	/**
+	 * Nonzero: a service handler may call its response closure from any
+	 * thread, so it can hand a request to a thread pool and answer from
+	 * there. The thread that creates the server is taken to be the loop
+	 * thread. A response given from another thread is packed (the message
+	 * is copied, and may be freed when the closure returns) and posted to
+	 * the loop with the I/O system's `post` function (so `io` is required,
+	 * and must have one); the loop then sends it. Everything else stays
+	 * on the loop thread: the handlers themselves are invoked there, and so
+	 * are the `send` of the input stream a handler returns, `on_call_done`
+	 * and protobuf_c_grpc2_server_new(), _listen() and _free().
+	 *
+	 * The usual rule for closures holds, and is what releases the call: the
+	 * final call (the NULL message, or the one response of a method without
+	 * a response stream) must be made exactly once, after which the closure
+	 * is not used again. Calls to one closure must not overlap.
+	 */
+	int thread_safe;
 };
 
 #define PROTOBUF_C_GRPC2_SERVER_OPTIONS_INIT \

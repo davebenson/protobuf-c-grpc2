@@ -666,14 +666,36 @@ server_closure(const ProtobufCMessage *msg, void *data)
 	}
 }
 
+void
+protobuf_c_grpc2__server_respond(Call *c, const ProtobufCMessage *msg)
+{
+	server_closure(msg, c);
+}
+
 static void
 server_invoke(Call *c, const ProtobufCMessage *input)
 {
+	ProtobufCClosure closure = (ProtobufCClosure) server_closure;
+	void *closure_data = c;
+
 	c->closure_ref = 1;
 	c->refs++;
+	if (c->conn != NULL && c->conn->server != NULL &&
+	    c->conn->server->shared != NULL) {
+		/* thread_safe: the handler gets a closure that may be called
+		 * from any thread; it is freed by the final call */
+		void *safe = protobuf_c_grpc2__safe_closure_new(
+			c->conn->server->shared, c, c->method->output,
+			(c->stream_flags & PROTOBUF_C_OUTPUT_STREAMING) != 0);
+
+		if (safe != NULL) {
+			closure = (ProtobufCClosure) protobuf_c_grpc2__safe_closure;
+			closure_data = safe;
+		}
+	}
 	c->sink = c->service->invoke(c->service,
 				     c->method_index | c->stream_flags, input,
-				     (ProtobufCClosure) server_closure, c);
+				     closure, closure_data);
 }
 
 /* A complete request message arrived. */

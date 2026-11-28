@@ -339,6 +339,18 @@ if(BUILD_TESTS)
         protobuf-c-grpc2-${lib})
       add_test(NAME threads-${backend} COMMAND test-threads-${backend})
       set_tests_properties(threads-${backend} PROPERTIES TIMEOUT 60)
+
+      add_executable(test-threads-server-${backend} t/threads-server.c
+        t/loop-backend-${backend}.c
+        ${CMAKE_CURRENT_BINARY_DIR}/examples/greeter.pb-c.c)
+      target_include_directories(test-threads-server-${backend} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/t
+        ${CMAKE_CURRENT_BINARY_DIR}/examples)
+      target_link_libraries(test-threads-server-${backend}
+        protobuf-c-grpc2-${lib})
+      add_test(NAME threads-server-${backend}
+        COMMAND test-threads-server-${backend})
+      set_tests_properties(threads-server-${backend} PROPERTIES TIMEOUT 60)
     endif()
 
     add_executable(test-client-${backend} t/client.c

@@ -3,12 +3,136 @@
  * list of connections. The per-connection work (moving bytes between the I/O
  * stream, the optional TLS session and the HTTP/2 connection) is in pump.c.
  */
+#include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "protobuf-c-grpc2-internal.h"
 
 #define IO_CHUNK 16384
+
+/* ------------------------------------------------------------------ */
+/* responses from other threads (thread_safe servers) */
+
+void
+protobuf_c_grpc2__server_shared_unref(ServerShared *shared)
+{
+	if (--shared->refs > 0)
+		return;
+	if (shared->io->destroy != NULL)
+		shared->io->destroy(shared->io);
+	free(shared);
+}
+
+/* What a handler of a thread_safe server calls instead of the call's own
+ * closure. One per call, alive until the final response has been given, and
+ * holding a reference to `shared` so that it works even if the server is
+ * freed first. (The call itself is kept alive by the reference the closure
+ * holds, as for any closure.) */
+typedef struct {
+	ServerShared *shared;
+	struct Call *call;
+	const ProtobufCMessageDescriptor *output;	/* of the response */
+	int output_streaming;
+} SafeClosure;
+
+typedef struct {
+	SafeClosure *sc;
+	uint8_t *data;			/* the packed response, if any */
+	size_t len;
+	int has_message;
+} Response;
+
+static void
+safe_closure_free(SafeClosure *sc)
+{
+	protobuf_c_grpc2__server_shared_unref(sc->shared);
+	free(sc);
+}
+
+static int
+safe_closure_is_final(const SafeClosure *sc, const ProtobufCMessage *msg)
+{
+	return msg == NULL || !sc->output_streaming;
+}
+
+void *
+protobuf_c_grpc2__safe_closure_new(ServerShared *shared, struct Call *call,
+				   const ProtobufCMessageDescriptor *output,
+				   int output_streaming)
+{
+	SafeClosure *sc = calloc(1, sizeof(*sc));
+
+	if (sc == NULL)
+		return NULL;
+	sc->shared = shared;
+	shared->refs++;
+	sc->call = call;
+	sc->output = output;
+	sc->output_streaming = output_streaming;
+	return sc;
+}
+
+static void
+response_run(void *arg)
+{
+	Response *r = arg;
+	SafeClosure *sc = r->sc;
+	ProtobufCMessage *m = NULL;
+	int final;
+
+	if (r->has_message)
+		m = protobuf_c_message_unpack(sc->output, NULL, r->len, r->data);
+	final = safe_closure_is_final(sc, r->has_message ? (void *) r : NULL);
+	/* a response that cannot be unpacked (it was packed from a valid
+	 * message, so only out of memory) ends the call as a failure */
+	protobuf_c_grpc2__server_respond(sc->call,
+					 r->has_message && m == NULL ? NULL : m);
+	if (m != NULL)
+		protobuf_c_message_free_unpacked(m, NULL);
+	free(r->data);
+	free(r);
+	if (final)
+		safe_closure_free(sc);
+}
+
+void
+protobuf_c_grpc2__safe_closure(const ProtobufCMessage *msg, void *data)
+{
+	SafeClosure *sc = data;
+	Response *r;
+
+	if (pthread_equal(pthread_self(), sc->shared->home)) {
+		int final = safe_closure_is_final(sc, msg);
+
+		protobuf_c_grpc2__server_respond(sc->call, msg);
+		if (final)
+			safe_closure_free(sc);
+		return;
+	}
+	r = calloc(1, sizeof(*r));
+	if (r != NULL && msg != NULL) {
+		size_t n = protobuf_c_message_get_packed_size(msg);
+
+		r->data = malloc(n ? n : 1);
+		if (r->data != NULL) {
+			protobuf_c_message_pack(msg, r->data);
+			r->len = n;
+			r->has_message = 1;
+		}
+		else {
+			free(r);
+			r = NULL;
+		}
+	}
+	if (r != NULL)
+		r->sc = sc;
+	/* nowhere to report a failure to: the response would be lost and the
+	 * call would never end */
+	if (r == NULL || sc->shared->io->post(sc->shared->io, response_run, r) != 0)
+		abort();
+}
 
 /* ------------------------------------------------------------------ */
 /* connections (the per-connection work is in pump.c) */
@@ -20,7 +144,9 @@ server_maybe_finish(ProtobufCGrpc2Server *server)
 		return;
 	if (server->hook != NULL)
 		server->io->remove_iteration_hook(server->io, server->hook);
-	if (server->io->destroy != NULL)
+	if (server->shared != NULL)
+		protobuf_c_grpc2__server_shared_unref(server->shared);
+	else if (server->io->destroy != NULL)
 		server->io->destroy(server->io);
 	if (server->sts != NULL && server->sts->destroy != NULL)
 		server->sts->destroy(server->sts);
@@ -115,6 +241,8 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 	if ((o.n_services > 0 && o.services == NULL) ||
 	    (o.io == NULL && o.secure_transport != NULL))
 		return NULL;
+	if (o.thread_safe && (o.io == NULL || o.io->post == NULL))
+		return NULL;
 	server = calloc(1, sizeof(*server));
 	if (server == NULL)
 		return NULL;
@@ -139,6 +267,18 @@ protobuf_c_grpc2_server_new(const ProtobufCGrpc2ServerOptions *options)
 			free(server->services);
 			free(server);
 			return NULL;
+		}
+		if (o.thread_safe) {
+			server->shared = calloc(1, sizeof(*server->shared));
+			if (server->shared == NULL) {
+				o.io->remove_iteration_hook(o.io, server->hook);
+				free(server->services);
+				free(server);
+				return NULL;
+			}
+			server->shared->refs = 1;	/* the server's */
+			server->shared->io = o.io;
+			server->shared->home = pthread_self();
 		}
 		server->io = o.io;
 		if (o.io->ref != NULL)

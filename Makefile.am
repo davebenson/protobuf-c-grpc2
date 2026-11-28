@@ -22,7 +22,7 @@ EXTRA_DIST = CMakeLists.txt \
 	t/loopback.proto t/loopback.c t/endpoints.c t/client.c t/protocol.c \
 	t/bulk.c t/poll.c t/dispatch.c t/loop-backend.h t/loop-backend-uv.c t/loop-backend-poll.c \
 	t/loop-backend-dispatch.c t/loop-backend-dispatch-embed.c \
-	t/threads.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
+	t/threads.c t/threads-server.c t/glib.c t/glib-iterate.h t/loop-backend-glib.c \
 	t/free-port.h t/tls-backend.h t/tls-backend-openssl.c t/tls-backend-gnutls.c t/tls-test-certs.h t/tls-interop.c \
 	examples/greeter.proto examples/libuv-server.c \
 	examples/libuv-client.c examples/smoke-test.sh \
@@ -230,28 +230,40 @@ t_test_bulk_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GL
 endif
 # thread safe clients (the dispatch adapter cannot be woken from another thread)
 if BUILD_UV_TESTS
-check_PROGRAMS += t/test-threads-uv
-TESTS += t/test-threads-uv
+check_PROGRAMS += t/test-threads-uv t/test-threads-server-uv
+TESTS += t/test-threads-uv t/test-threads-server-uv
 t_test_threads_uv_SOURCES = t/threads.c t/loop-backend-uv.c
 nodist_t_test_threads_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_threads_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_threads_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
+t_test_threads_server_uv_SOURCES = t/threads-server.c t/loop-backend-uv.c
+nodist_t_test_threads_server_uv_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_threads_server_uv_CPPFLAGS = $(AM_CPPFLAGS) $(LIBUV_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_threads_server_uv_LDADD = libprotobuf-c-grpc2-uv.la libprotobuf-c-grpc2.la $(LIBUV_LIBS)
 endif
 if BUILD_POLL_TESTS
-check_PROGRAMS += t/test-threads-poll
-TESTS += t/test-threads-poll
+check_PROGRAMS += t/test-threads-poll t/test-threads-server-poll
+TESTS += t/test-threads-poll t/test-threads-server-poll
 t_test_threads_poll_SOURCES = t/threads.c t/loop-backend-poll.c
 nodist_t_test_threads_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_threads_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_threads_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
+t_test_threads_server_poll_SOURCES = t/threads-server.c t/loop-backend-poll.c
+nodist_t_test_threads_server_poll_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_threads_server_poll_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_threads_server_poll_LDADD = libprotobuf-c-grpc2-poll.la libprotobuf-c-grpc2.la
 endif
 if BUILD_GLIB_TESTS
-check_PROGRAMS += t/test-threads-glib
-TESTS += t/test-threads-glib
+check_PROGRAMS += t/test-threads-glib t/test-threads-server-glib
+TESTS += t/test-threads-glib t/test-threads-server-glib
 t_test_threads_glib_SOURCES = t/threads.c t/loop-backend-glib.c
 nodist_t_test_threads_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
 t_test_threads_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
 t_test_threads_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
+t_test_threads_server_glib_SOURCES = t/threads-server.c t/loop-backend-glib.c
+nodist_t_test_threads_server_glib_SOURCES = examples/greeter.pb-c.c examples/greeter.pb-c.h
+t_test_threads_server_glib_CPPFLAGS = $(AM_CPPFLAGS) $(GLIB_CFLAGS) -I$(srcdir)/t -I$(builddir)/examples
+t_test_threads_server_glib_LDADD = libprotobuf-c-grpc2-glib.la libprotobuf-c-grpc2.la $(GLIB_LIBS)
 endif
 if BUILD_GLIB_ENDPOINTS_TEST
 check_PROGRAMS += t/test-endpoints-glib
